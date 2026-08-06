@@ -57,6 +57,13 @@ import struct
 from pathlib import Path
 from datetime import datetime
 
+BASE_DIR = Path(os.getenv("BASE_DIR", "/home/nahin/Documentos/SNAP_DOCUMENTATION/Resultados_V1.3/Scripts_Automatizacion_Snaphu"))
+SUBSET_DIM = os.getenv("SUBSET_DIM")
+
+# Al inicio del script, después de los imports:
+input_dim = os.getenv("INPUT_DIM") or str(BASE_DIR / "SnaphuImport" / "output_final_Orb_Orb_UNW.dim")
+output_folder = os.getenv("OUTPUT_DIR") or str(BASE_DIR / "PhaseToDisplacement")
+
 # =============================================================================
 # COLORES PARA TERMINAL
 # =============================================================================
@@ -228,72 +235,56 @@ def validate_snaphu_conf(conf_path):
 # =============================================================================
 # PASO 0 – RECOLECTAR RUTAS (MODIFICADO)
 # =============================================================================
+# =============================================================================
+# PASO 0 – RECOLECTAR RUTAS (SOLO MODO NO-INTERACTIVO)
+# =============================================================================
 def collect_inputs():
+    print(f"[DEBUG] NON_INTERACTIVE env var = '{os.environ.get('NON_INTERACTIVE', 'NO ESTÁ DEFINIDA')}'")
+    print(f"[DEBUG] ALL env vars with SNAP: {[k for k in os.environ.keys() if 'SNAP' in k or 'NON' in k]}")
+
     header("CONFIGURACIÓN DEL PIPELINE")
+    
+    info("Modo API: cargando configuración desde variables de entorno")
+    
+    subset_dim = os.environ.get("SUBSET_DIM")
+    base_folder = os.environ.get("BASE_FOLDER")
+    export_dir = os.environ.get("EXPORT_DIR")
+    unwrap_dir = os.environ.get("UNWRAP_DIR")
+    import_dir = os.environ.get("IMPORT_DIR")
+    gpt_bin = os.environ.get("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
+    snaphu_bin = os.environ.get("SNAPHU_BIN", "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu")
 
-    print(f"{C.BOLD}Este script creará automáticamente 3 carpetas:{C.RESET}")
-    print("   • SnaphuExport")
-    print("   • SnaphuUnwrapping")
-    print("   • SnaphuImport\n")
-
-    step("A", "Resultado del GRÁFICO 4 (Subset .dim)")
-    subset_dim = ask(
-        "Ruta completa del archivo .dim del Gráfico 4",
-        default="/home/nahin/Documentos/Proyectos_Personales/SNAP V1.1/satellite-image-processing-flow-automation/backend/files/output/output/Grafo4/output_final_Orb_Orb.dim"
-    )
-    if not check_file(subset_dim, "Subset .dim"):
+    # Validar que todas las variables requeridas estén presentes
+    required = {
+        "SUBSET_DIM": subset_dim,
+        "BASE_FOLDER": base_folder,
+        "EXPORT_DIR": export_dir,
+        "UNWRAP_DIR": unwrap_dir,
+        "IMPORT_DIR": import_dir,
+    }
+    
+    missing = [k for k, v in required.items() if not v]
+    if missing:
+        error(f"Faltan variables de entorno requeridas: {', '.join(missing)}")
         sys.exit(1)
 
-    step("B", "Carpeta PRINCIPAL de salida")
-    base_folder = ask(
-        "Ruta de la carpeta principal (se crearán las 3 subcarpetas dentro)",
-        default="/home/nahin/Documentos/SNAP_DOCUMENTATION/Resultados_V1.3"
-    )
+    # Validar archivos
+    for path, label in [(subset_dim, "SUBSET_DIM"), (gpt_bin, "GPT_BIN"), (snaphu_bin, "SNAPHU_BIN")]:
+        if not Path(path).exists():
+            error(f"{label} no encontrado: {path}")
+            sys.exit(1)
 
-    base_path = Path(base_folder)
-    base_path.mkdir(parents=True, exist_ok=True)
-
-    # Crear las 3 carpetas
-    export_dir = base_path / "SnaphuExport"
-    unwrap_dir = base_path / "SnaphuUnwrapping"
-    import_dir = base_path / "SnaphuImport"
-
-    for folder, name in [(export_dir, "SnaphuExport"), (unwrap_dir, "SnaphuUnwrapping"), (import_dir, "SnaphuImport")]:
-        folder.mkdir(exist_ok=True)
-        ok(f"Carpeta creada: {name}")
-
-    # === GPT ===
-    step("C", "Ejecutable GPT de SNAP")
-    gpt_default = shutil.which("gpt") or "/home/nahin/esa-snap/bin/gpt"
-    gpt_bin = ask("Ruta del ejecutable 'gpt' de SNAP", default=gpt_default)
-    if not Path(gpt_bin).exists():
-        error(f"gpt no encontrado en: {gpt_bin}")
-        sys.exit(1)
-    ok(f"gpt encontrado: {gpt_bin}")
-
-    # snaphu (se mantiene igual)
-    step("D", "Binario snaphu")
-    snaphu_path_bin = check_cmd("snaphu")
-    snaphu_2_path = "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu"
-    snaphu_2_exists = Path(snaphu_2_path).exists()
-
-    options = []
-    if snaphu_path_bin: options.append(("PATH", snaphu_path_bin))
-    if snaphu_2_exists: options.append(("SNAP bundled", snaphu_2_path))
-
-    choice = input(f"{C.CYAN}Elige binario de snaphu [1]: {C.RESET}").strip() or "1"
-    snaphu_bin = options[int(choice)-1][1] if options else None
-
+    ok(f"Configuración cargada correctamente")
+    
     return {
         "subset_dim": subset_dim,
-        "base_folder": str(base_path),
-        "export_dir": str(export_dir),
-        "unwrap_dir": str(unwrap_dir),
-        "import_dir": str(import_dir),
+        "base_folder": base_folder,
+        "export_dir": export_dir,
+        "unwrap_dir": unwrap_dir,
+        "import_dir": import_dir,
         "gpt_bin": gpt_bin,
         "snaphu_bin": snaphu_bin,
     }
-
 # =============================================================================
 # PASO 1 – GRÁFICO 5: SNAPHU EXPORT (con validación posterior)
 # =============================================================================
@@ -450,8 +441,12 @@ def run_grafico6(cfg):
 
     if line_width is None:
         warn("No se encontró LINELENGTH en snaphu.conf.")
-        lw_str = ask("Introduce el ancho de línea (LINE_WIDTH) manualmente", default="6041")
-        line_width = int(lw_str)
+        if os.environ.get("NON_INTERACTIVE") == "1":
+            line_width = 6041
+            info(f"Modo API: usando LINE_WIDTH por defecto = {line_width}")
+        else:
+            lw_str = ask("Introduce el ancho de línea (LINE_WIDTH) manualmente", default="6041")
+            line_width = int(lw_str)
 
     # ── VALIDACIÓN: inspeccionar binarios Phase y Coherencia ─────────────
     subheader("Validando archivo de FASE")
@@ -713,7 +708,7 @@ def main():
     print(f"  Iniciado: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
     cfg = collect_inputs()
-
+    
     header("RESUMEN DE CONFIGURACIÓN")
     print(f"  Subset .dim          : {cfg['subset_dim']}")
     print(f"  Carpeta Base         : {cfg['base_folder']}")
@@ -723,9 +718,15 @@ def main():
     print(f"  Ejecutable gpt       : {cfg['gpt_bin']}")
     print(f"  Binario snaphu       : {cfg['snaphu_bin']}")
 
-    if not ask_yes_no("¿Todo correcto? ¿Iniciar el pipeline?", default="s"):
-        print("Cancelado por el usuario.")
-        sys.exit(0)
+    
+
+# En modo no-interactivo, saltar la confirmación del usuario
+    if os.environ.get("NON_INTERACTIVE") == "1":
+        info("Modo API: iniciando pipeline automáticamente")
+    else:
+        if not ask_yes_no("¿Todo correcto? ¿Iniciar el pipeline?", default="s"):
+            print("Cancelado por el usuario.")
+            sys.exit(0)
 
     t0 = datetime.now()
     results = {}

@@ -9,6 +9,7 @@ from PIL import Image
 import io
 import tempfile
 import uuid
+from pathlib import Path
 
 app = Flask(__name__)
 CORS(app)
@@ -22,6 +23,44 @@ GRAPH_LABELS = {
     "GRAFICO_2b.xml": "Grafo 2b - Interferogram",
     "GRAFICO_3.xml": "Grafo 3 - Terrain Correction",
     "GRAFICO_4.xml": "Grafo 4 - Final Output",
+}
+
+# ==================== PROCESADORES ADICIONALES (Scripts Python) ====================
+PROCESSORS = {
+    "SNAPHU_EXPORT": {
+        "name": "Snaphu Export (Gráfico 5)",
+        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/Prueba_Subcarpetas_FUNCIONAL.py",
+        "type": "python"
+    },
+    "SNAPHU_UNWRAPPING": {
+        "name": "Snaphu Unwrapping (Gráfico 6)",
+        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/Prueba_Subcarpetas_FUNCIONAL.py",  # mismo script, pero se puede separar después
+        "type": "python"
+    },
+    "PHASE_TO_DISPLACEMENT": {
+        "name": "Phase to Displacement",
+        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/phase_to_displacement.py",
+        "type": "python"
+    },
+    "TERRAIN_CORRECTION": {
+        "name": "Terrain Correction + Máscara",
+        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/TerrainCorrection.py",
+        "type": "python"
+    },
+}
+
+# ==================== PARÁMETROS CONFIGURABLES POR EL USUARIO ====================
+DEFAULT_PARAMS = {
+    "subset_region": "0,0,24165,4188",
+    "snaphu_tile_rows": 4,
+    "snaphu_tile_cols": 4,
+    "snaphu_processors": 4,
+    "snaphu_row_overlap": 300,
+    "snaphu_col_overlap": 300,
+    "snaphu_cost_threshold": 500,
+    "coherence_threshold": 0.3,
+    "displacement_max_m": 2.0,
+    "band_maths_expression": "",
 }
 
 
@@ -108,6 +147,7 @@ def procesar():
         graph = request.json['graph']
         input_data = request.json['input']
         output_file = request.json['output']
+        user_params = request.json.get('params', {})
 
         # Convertir a lista si es un solo archivo
         if isinstance(input_data, str):
@@ -152,13 +192,11 @@ def procesar():
             
             absolute_input_files.append(abs_path)
         
-          # Convertir a rutas absolutas
+        # Convertir a rutas absolutas
         graph = os.path.abspath(graph)
         output_file = os.path.abspath(output_file)
 
-        # Insertar la subcarpeta descriptiva del gráfico (ej. "Grafo 1 - Orbit")
-        # entre el output_dir base y el nombre del archivo, para que cada
-        # gráfico guarde sus resultados en su propia carpeta.
+        # Insertar la subcarpeta descriptiva del gráfico
         output_base_dir = os.path.dirname(output_file)
         output_filename = os.path.basename(output_file)
         folder_name = carpeta_para_grafo(graph)
@@ -171,20 +209,23 @@ def procesar():
             output_file += '.dim'
         GPT_PATH = "/home/nahin/esa-snap/bin/gpt"
 
-        # Construir lista de argumentos (evitar shell=True para que Windows no rompa rutas con espacios)
+        # Construir lista de argumentos
         cmd_list = [GPT_PATH, graph]
         cmd_list.append(f"-PinputFile={absolute_input_files[0]}")
         cmd_list.append(f"-PoutputFile={output_file}")
         if len(absolute_input_files) >= 2:
             cmd_list.append(f"-PinputFile2={absolute_input_files[1]}")
+        
+        # Inyectar parámetros del usuario (ej: subsetRegion, etc.)
+        for k, v in user_params.items():
+            if v not in [None, ""]:
+                cmd_list.append(f"-P{k}={v}")
 
-    
         result = subprocess.run(cmd_list, capture_output=True, text=True)
 
         if result.returncode == 0:
             return jsonify({"status": "ok", "output": output_file})
         else:
-      
             return jsonify({"status": "error", "message": result.stderr})
     except FileNotFoundError as e:
         return jsonify({"status": "error", "message": f"No se encontró el comando 'gpt'. Verifica que esté instalado y en el PATH. Error: {str(e)}"}), 500
@@ -194,25 +235,369 @@ def procesar():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
+def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir, user_params=None):
+    """
+    Núcleo del flujo completo (Pasos 1-7): Orbit x2 -> Back-Geocoding ->
+    Interferogram -> Terrain Correction -> Subset -> Snaphu -> Phase to
+    Displacement -> Terrain Correction final.
+
+    Reutilizable tanto por /procesar_flujo (una sola pareja de imágenes)
+    como por /procesar_flujo_batch (muchas parejas, una por subcarpeta).
+
+    No usa jsonify ni request: recibe todo por parámetros y devuelve
+    (dict_resultado, http_status) para que el llamador decida qué hacer
+    con la respuesta (responder directo o acumular en un batch).
+    """
+    output_dir = os.path.abspath(output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    # --- Mezclar parámetros del usuario con los por defecto ---
+    user_params = user_params or {}
+    params = {**DEFAULT_PARAMS, **user_params}
+    print(f"[DEBUG] Parámetros efectivos: {params}")
+
+    # ==================== PASOS 1-4: GRÁFICOS XML (GPT) ====================
+    graph_files = {
+        "1": os.path.join(backend_dir, "files", "GRAFICO_1.xml"),
+        "2a": os.path.join(backend_dir, "files", "GRAFICO_2a.xml"),
+        "2b": os.path.join(backend_dir, "files", "GRAFICO_2b.xml"),
+        "3": os.path.join(backend_dir, "files", "GRAFICO_3.xml"),
+        "4": os.path.join(backend_dir, "files", "GRAFICO_4.xml"),
+    }
+    GPT_PATH = "/home/nahin/esa-snap/bin/gpt"
+
+    def ejecutar_grafo(label, input1, output_file, input2=None, extra_params=None):
+        """
+        Ejecuta un gráfico XML de SNAP con gpt, validando entrada y salida.
+        Devuelve la ruta absoluta del .dim generado, o lanza RuntimeError.
+        """
+        graph = graph_files[label]
+
+        if not os.path.exists(input1):
+            raise RuntimeError(
+                f"El archivo de entrada para el paso {label} no existe: {input1}. "
+                f"El paso anterior no generó la salida esperada."
+            )
+        if input2 and not os.path.exists(input2):
+            raise RuntimeError(
+                f"El segundo archivo de entrada para el paso {label} no existe: {input2}."
+            )
+
+        file_size_mb = os.path.getsize(input1) / (1024 * 1024)
+        print(f"[DEBUG] Paso {label}: entrada válida -> {input1} ({file_size_mb:.2f} MB)")
+        if input2:
+            print(f"[DEBUG] Paso {label}: entrada 2 válida -> {input2}")
+
+        if not output_file.lower().endswith('.dim'):
+            output_file += '.dim'
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+
+        cmd_list = [GPT_PATH, graph, f"-PinputFile={input1}", f"-PoutputFile={output_file}"]
+        if input2:
+            cmd_list.append(f"-PinputFile2={input2}")
+        if extra_params:
+            for k, v in extra_params.items():
+                cmd_list.append(f"-P{k}={v}")
+
+        print(f"\n--- Ejecutando paso {label} (XML) ---")
+        print(cmd_list)
+
+        result = subprocess.run(cmd_list, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(result.stderr)
+            raise RuntimeError(result.stderr)
+
+        if not os.path.exists(output_file):
+            data_folder = output_file.replace('.dim', '.data')
+            error_msg = f"El paso {label} reportó éxito pero el archivo de salida no se encontró: {output_file}"
+            if os.path.exists(data_folder):
+                error_msg += (
+                    f". Se detectó la carpeta .data asociada ({data_folder}). "
+                    f"SNAP pudo fallar al escribir el encabezado .dim."
+                )
+            raise RuntimeError(error_msg)
+
+        file_size_mb = os.path.getsize(output_file) / (1024 * 1024)
+        print(f"[DEBUG] Paso {label}: salida generada -> {output_file} ({file_size_mb:.2f} MB)")
+        print(f"✅ Paso {label} (XML) completado.")
+        return output_file
+
+    if len(absolute_input_files) < 2:
+        return {
+            "status": "error",
+            "step": "1-4",
+            "message": (
+                "El flujo requiere dos imágenes (master y slave) para el Gráfico 2a "
+                "(Back-Geocoding). Sólo se recibió una."
+            )
+        }, 400
+
+    name1 = os.path.splitext(os.path.basename(absolute_input_files[0]))[0]
+    folder_1 = os.path.join(output_dir, carpeta_para_grafo(graph_files["1"]))
+
+    try:
+        # --- Paso 1: Orbit, aplicado a AMBAS imágenes por separado ---
+        out1_master = ejecutar_grafo(
+            "1", absolute_input_files[0],
+            os.path.join(folder_1, f"{name1}_step_1.dim")
+        )
+
+        name2 = os.path.splitext(os.path.basename(absolute_input_files[1]))[0]
+        out1_slave = ejecutar_grafo(
+            "1", absolute_input_files[1],
+            os.path.join(folder_1, f"{name2}_step_1.dim")
+        )
+
+        # --- Paso 2a: Back-Geocoding, recibe las DOS salidas del paso 1 ---
+        out2a = ejecutar_grafo(
+            "2a", out1_master,
+            os.path.join(output_dir, carpeta_para_grafo(graph_files["2a"]), f"{name1}_step_2a.dim"),
+            input2=out1_slave
+        )
+
+        # --- Paso 2b: Interferogram, recibe la salida de 2a ---
+        out2b = ejecutar_grafo(
+            "2b", out2a,
+            os.path.join(output_dir, carpeta_para_grafo(graph_files["2b"]), f"{name1}_step_2b.dim")
+        )
+
+        # --- Paso 3: Terrain Correction, recibe la salida de 2b ---
+        out3 = ejecutar_grafo(
+            "3", out2b,
+            os.path.join(output_dir, carpeta_para_grafo(graph_files["3"]), f"{name1}_step_3.dim")
+        )
+
+        # --- Paso 4: Subset, recibe la salida de 3 ---
+        out4 = ejecutar_grafo(
+            "4", out3,
+            os.path.join(output_dir, carpeta_para_grafo(graph_files["4"]), f"{name1}_step_4.dim"),
+            extra_params={"subsetRegion": params["subset_region"]}
+        )
+    except RuntimeError as e:
+        return {"status": "error", "step": "1-4", "message": str(e)}, 500
+
+    current_input = out4
+
+    # ==================== PASOS 5-7: PROCESADORES PYTHON ====================
+    python_steps = [
+        ("SNAPHU_FULL", "5"),
+        ("PHASE_TO_DISPLACEMENT", "6"),
+        ("TERRAIN_CORRECTION", "7"),
+    ]
+
+    for step_name, label in python_steps:
+        print(f"\n--- Ejecutando paso {label} (Python: {step_name}) ---")
+
+        # Preparar entorno igual que en procesar_paso()
+        base_path = Path(output_dir)
+        env = os.environ.copy()
+        env["BASE_DIR"] = str(base_path)
+        env["GPT_BIN"] = "/home/nahin/esa-snap/bin/gpt"
+        env["SNAPHU_BIN"] = "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu"
+        env["NON_INTERACTIVE"] = "1"
+
+        # Parámetros configurables del usuario
+        env["SNAPHU_TILE_ROWS"] = str(params["snaphu_tile_rows"])
+        env["SNAPHU_TILE_COLS"] = str(params["snaphu_tile_cols"])
+        env["SNAPHU_PROCESSORS"] = str(params["snaphu_processors"])
+        env["SNAPHU_ROW_OVERLAP"] = str(params["snaphu_row_overlap"])
+        env["SNAPHU_COL_OVERLAP"] = str(params["snaphu_col_overlap"])
+        env["SNAPHU_COST_THRESHOLD"] = str(params["snaphu_cost_threshold"])
+        env["COHERENCE_THRESHOLD"] = str(params["coherence_threshold"])
+        env["DISPLACEMENT_MAX_M"] = str(params["displacement_max_m"])
+        env["BAND_MATHS_EXPRESSION"] = str(params.get("band_maths_expression", ""))
+
+        # Determinar script y variables según el paso
+        script_path = None
+
+        if step_name == "SNAPHU_FULL":
+            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "Prueba_Subcarpetas_FUNCIONAL.py")
+            script_path = os.path.abspath(script_path)
+
+            # Buscar archivo de entrada (subset del paso 4)
+            subset_dim = current_input  # Salida del paso 4
+            if not os.path.isabs(subset_dim):
+                possible_paths = [
+                    os.path.join(base_path, subset_dim),
+                    os.path.join(backend_dir, "files", subset_dim),
+                    os.path.join(backend_dir, "files", "output", subset_dim),
+                ]
+                for p in possible_paths:
+                    if os.path.exists(p):
+                        subset_dim = os.path.abspath(p)
+                        break
+
+            env["SUBSET_DIM"] = subset_dim
+            export_dir = base_path / "SnaphuExport"
+            unwrap_dir = base_path / "SnaphuUnwrapping"
+            import_dir = base_path / "SnaphuImport"
+            for folder in [export_dir, unwrap_dir, import_dir]:
+                folder.mkdir(parents=True, exist_ok=True)
+            env["EXPORT_DIR"] = str(export_dir)
+            env["UNWRAP_DIR"] = str(unwrap_dir)
+            env["IMPORT_DIR"] = str(import_dir)
+            env["BASE_FOLDER"] = str(base_path)
+
+        elif step_name == "PHASE_TO_DISPLACEMENT":
+            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "phase_to_displacement.py")
+            script_path = os.path.abspath(script_path)
+
+            # Buscar automáticamente en SnaphuImport
+            snaphu_import_dir = base_path / "SnaphuImport"
+            dim_files = list(snaphu_import_dir.glob("*.dim"))
+            if dim_files:
+                env["INPUT_DIM"] = str(dim_files[0])
+            else:
+                env["INPUT_DIM"] = str(base_path / "SnaphuImport" / "output_final_Orb_Orb_UNW.dim")
+
+        elif step_name == "TERRAIN_CORRECTION":
+            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "TerrainCorrection.py")
+            script_path = os.path.abspath(script_path)
+
+            # SUBSET_DIM: buscar en Grafo 4
+            grafo4_dir = base_path / "Grafo 4 - Final Output"
+            grafo4_files = list(grafo4_dir.glob("*.dim"))
+            if grafo4_files:
+                env["SUBSET_DIM"] = str(grafo4_files[0])
+            else:
+                env["SUBSET_DIM"] = str(base_path / "Grafo 4 - Final Output" / "output_final_Orb_Orb.dim")
+
+            # DISPLACEMENT_DIM: buscar en PhaseToDisplacement
+            disp_dir = base_path / "PhaseToDisplacement"
+            disp_files = list(disp_dir.glob("*.dim"))
+            if disp_files:
+                env["DISPLACEMENT_DIM"] = str(disp_files[0])
+            else:
+                env["DISPLACEMENT_DIM"] = str(base_path / "PhaseToDisplacement" / "output_final_Orb_Orb_DISP.dim")
+
+        if not Path(script_path).exists():
+            return {
+                "status": "error",
+                "step": label,
+                "message": f"Script no encontrado: {script_path}"
+            }, 404
+
+        # --- Validación: archivo de entrada para el paso Python ---
+        if step_name == "SNAPHU_FULL":
+            input_check = env.get("SUBSET_DIM")
+        elif step_name == "PHASE_TO_DISPLACEMENT":
+            input_check = env.get("INPUT_DIM")
+        elif step_name == "TERRAIN_CORRECTION":
+            input_check = env.get("DISPLACEMENT_DIM")
+        else:
+            input_check = None
+
+        if input_check and not os.path.exists(input_check):
+            error_msg = (
+                f"El archivo de entrada para el paso {label} ({step_name}) no existe: {input_check}. "
+                f"Verifica que el paso anterior se haya ejecutado correctamente."
+            )
+            print(f"[ERROR] {error_msg}")
+            return {"status": "error", "step": label, "message": error_msg}, 500
+        elif input_check:
+            file_size_mb = os.path.getsize(input_check) / (1024 * 1024)
+            print(f"[DEBUG] Paso {label}: entrada válida -> {input_check} ({file_size_mb:.2f} MB)")
+
+        # Ejecución con streaming en paralelo (igual que procesar_paso)
+        import threading
+        import sys
+
+        collected_stdout = []
+        collected_stderr = []
+
+        process = subprocess.Popen(
+            ["python3", "-u", script_path],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=os.path.dirname(script_path)
+        )
+
+        def read_stdout():
+            for line in process.stdout:
+                line_stripped = line.rstrip()
+                print(f"[{step_name}-OUT] {line_stripped}", flush=True)
+                collected_stdout.append(line_stripped)
+
+        def read_stderr():
+            for line in process.stderr:
+                line_stripped = line.rstrip()
+                print(f"[{step_name}-ERR] {line_stripped}", file=sys.stderr, flush=True)
+                collected_stderr.append(line_stripped)
+
+        t_out = threading.Thread(target=read_stdout)
+        t_err = threading.Thread(target=read_stderr)
+        t_out.start()
+        t_err.start()
+        process.wait()
+        t_out.join()
+        t_err.join()
+
+        stdout_text = "\n".join(collected_stdout)
+        stderr_text = "\n".join(collected_stderr)
+
+        if process.returncode != 0:
+            print(f"[ERROR] Paso {label} ({step_name}) falló.")
+            return {
+                "status": "error",
+                "step": label,
+                "message": f"Error en {step_name}",
+                "stderr": stderr_text[-3000:] if len(stderr_text) > 3000 else stderr_text
+            }, 500
+
+        # --- Validación: verificar salidas del paso Python ---
+        if step_name == "SNAPHU_FULL":
+            # Verificar que se generó al menos un .dim en SnaphuImport
+            import_dir = base_path / "SnaphuImport"
+            dim_files = list(import_dir.glob("*.dim"))
+            if not dim_files:
+                error_msg = f"El paso {label} (SNAPHU_FULL) no generó archivos .dim en {import_dir}"
+                print(f"[ERROR] {error_msg}")
+                return {"status": "error", "step": label, "message": error_msg}, 500
+            current_input = str(dim_files[0])
+            print(f"[DEBUG] Paso {label}: salida detectada -> {current_input}")
+
+        elif step_name == "PHASE_TO_DISPLACEMENT":
+            disp_dir = base_path / "PhaseToDisplacement"
+            dim_files = list(disp_dir.glob("*.dim"))
+            if not dim_files:
+                error_msg = f"El paso {label} (PHASE_TO_DISPLACEMENT) no generó archivos .dim en {disp_dir}"
+                print(f"[ERROR] {error_msg}")
+                return {"status": "error", "step": label, "message": error_msg}, 500
+            current_input = str(dim_files[0])
+            print(f"[DEBUG] Paso {label}: salida detectada -> {current_input}")
+
+        elif step_name == "TERRAIN_CORRECTION":
+            # TerrainCorrection no genera un .dim nuevo, usa el de displacement
+            # Verificar que el script terminó bien
+            print(f"[DEBUG] Paso {label}: TerrainCorrection completado (sin nuevo .dim)")
+
+        print(f"✅ Paso {label} (Python: {step_name}) completado.")
+
+    return {
+        "status": "ok",
+        "message": "Flujo completo ejecutado correctamente (pasos 1-7)",
+        "final_output": current_input
+    }, 200
+
 @app.route('/procesar_flujo', methods=['POST'])
 def procesar_flujo():
     """
-    Ejecuta los 4 gráficos XML en cola secuencialmente.
+    Ejecuta el flujo COMPLETO: 4 gráficos XML + 3 procesadores Python,
+    para UNA sola pareja de imágenes (master + slave).
     Espera un JSON con los campos:
     {
-      "inputs": ["archivo1.zip", "archivo2.dim"],  // Array de archivos de entrada
-      "output_dir": "C:/ruta/salida/"
+      "inputs": ["archivo1.zip", "archivo2.dim"],
+      "output_dir": "C:/ruta/salida/",
+      "params": { ... }   <-- OPCIONAL
     }
-    
-    Los archivos pueden estar en:
-    - backend/files/images/ (búsqueda por defecto)
-    - backend/files/output/ (si es resultado de procesamiento anterior)
-    - O ruta absoluta completa
     """
     try:
         data = request.json
         input_files = data.get('inputs', [])
         output_dir = data['output_dir']
+        user_params = data.get('params', {})
 
         if not input_files:
             return jsonify({
@@ -220,11 +605,9 @@ def procesar_flujo():
                 "message": "Se requiere al menos un archivo de entrada"
             }), 400
 
-        # Si solo se proporciona un string, convertirlo a lista
         if isinstance(input_files, str):
             input_files = [input_files]
 
-        # Convertir todas las rutas a absolutas
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         absolute_input_files = []
         
@@ -233,16 +616,14 @@ def procesar_flujo():
         for input_file in input_files:
             abs_path = None
             
-            # Si ya es una ruta absoluta
             if os.path.isabs(input_file):
                 abs_path = os.path.abspath(input_file)
             else:
-                # Buscar en estas ubicaciones (en orden de preferencia)
                 search_paths = [
                     os.path.join(backend_dir, "files", "images", input_file),
                     os.path.join(backend_dir, "files", "output", input_file),
                     os.path.join(backend_dir, "files", input_file),
-                    input_file  # Intentar como ruta relativa desde raíz
+                    input_file
                 ]
                 
                 for path in search_paths:
@@ -253,10 +634,8 @@ def procesar_flujo():
             
             print(f"[DEBUG] Buscando archivo: {input_file}")
             
-            # Verificar si el archivo existe
             if abs_path is None or not os.path.exists(abs_path):
                 print(f"[ERROR] Archivo no encontrado: {input_file}")
-                # Listar archivos disponibles en las carpetas
                 images_dir = os.path.join(backend_dir, "files", "images")
                 output_dir_list = os.path.join(backend_dir, "files", "output")
                 
@@ -275,81 +654,186 @@ def procesar_flujo():
             
             absolute_input_files.append(abs_path)
         
-        output_dir = os.path.abspath(output_dir)
-        
-        # Crear carpeta de salida si no existe
-        os.makedirs(output_dir, exist_ok=True)
+        result, code = _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir, user_params)
+        return jsonify(result), code
 
-        # Definir rutas absolutas de los gráficos
-        graph_files = [
-            os.path.join(backend_dir, "files", "GRAFICO_1.xml"),
-            os.path.join(backend_dir, "files", "GRAFICO_2a.xml"),
-            os.path.join(backend_dir, "files", "GRAFICO_2b.xml"),
-            os.path.join(backend_dir, "files", "GRAFICO_3.xml"),
-            os.path.join(backend_dir, "files", "GRAFICO_4.xml")
-        ]
-        # Etiquetas de paso para nombrar los archivos intermedios (_step_<label>.dim)
-        step_labels = ["1", "2a", "2b", "3", "4"]
-
-        # Solo GRAFICO_2a.xml necesita el segundo archivo de entrada (inputFile2),
-        # ya que es el que hace el Back-Geocoding / Enhanced-Spectral-Diversity.
-        # GRAFICO_2b.xml solo recibe un input (la salida de 2a).
-        graph_needs_second_input = os.path.basename(graph_files[1])  # "GRAFICO_2a.xml"
-
-        # Obtener nombre del archivo de entrada sin extensión
-        input_name_without_ext = os.path.splitext(os.path.basename(absolute_input_files[0]))[0]
-
-        # Secuencia de productos
-        current_input = absolute_input_files[0]
-        #GPT_PATH = r"C:/Users/vpena/AppData/Local/Programs/esa-snap/bin/gpt.exe"}
-        GPT_PATH = "/home/nahin/esa-snap/bin/gpt"
-
-        for i, graph in enumerate(graph_files, start=1):
-            label = step_labels[i - 1]
-
-            # Cada paso escribe dentro de su propia subcarpeta descriptiva
-            # (ej. output_dir/"Grafo 1 - Orbit/") en vez de tirar todo suelto
-            # en output_dir.
-            folder_name = carpeta_para_grafo(graph)
-            step_output_dir = os.path.join(output_dir, folder_name)
-            os.makedirs(step_output_dir, exist_ok=True)
-            output_file = os.path.join(step_output_dir, f"{input_name_without_ext}_step_{label}.dim")
-
-            # Para GRAFICO_2a, si hay un segundo archivo de entrada, usarlo como parámetro adicional
-            cmd_list = [GPT_PATH, graph]
-            cmd_list.append(f"-PinputFile={current_input}")
-            cmd_list.append(f"-PoutputFile={output_file}")
-            if os.path.basename(graph) == graph_needs_second_input and len(absolute_input_files) > 1:
-                cmd_list.append(f"-PinputFile2={absolute_input_files[1]}")
-
-            print(f"\n--- Ejecutando paso {label} ---")
-            print(cmd_list)
-
-            result = subprocess.run(cmd_list, capture_output=True, text=True)
-
-            if result.returncode != 0:
-                print(result.stderr)
-                return jsonify({
-                    "status": "error",
-                    "step": label,
-                    "message": result.stderr
-                }), 500
-
-            print(f"✅ Paso {label} completado.")
-            current_input = output_file  # salida de un paso = entrada del siguiente
-
+    except FileNotFoundError as e:
         return jsonify({
-            "status": "ok",
-            "message": "Flujo completo ejecutado correctamente",
-            "final_output": current_input
-        })
-
+            "status": "error",
+            "message": f"No se encontró el comando 'gpt'. Verifica que esté instalado y en el PATH. Error: {str(e)}"
+        }), 500
     except Exception as e:
         print(f"[ERROR] Excepción en procesar_flujo: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
-    
+
+@app.route('/procesar_flujo_batch', methods=['POST'])
+def procesar_flujo_batch():
+    """
+    Ejecuta el flujo COMPLETO (pasos 1-7) para MUCHAS parejas de imágenes
+    de una sola vez, a partir de una carpeta principal con esta estructura:
+
+    Carpeta_main/
+      Carpeta_0/  -> Img1, Img2
+      Carpeta_1/  -> Img1, Img2
+      ...
+      Carpeta_n/  -> Img1, Img2
+
+    Por cada subcarpeta se toman las 2 imágenes (.zip o .dim) que contiene
+    y se corre el flujo completo, generando TODA la salida (Grafo 1..4,
+    Snaphu, Phase to Displacement, Terrain Correction) DENTRO de esa misma
+    subcarpeta, al mismo nivel que las imágenes originales.
+
+    Si una subcarpeta falla, se registra el error y se continúa con las
+    demás (no se detiene el batch completo).
+
+    Espera un JSON:
+    {
+      "main_folder": "/ruta/a/Carpeta_main",
+      "params": { ... }   <-- OPCIONAL
+    }
+    """
+    try:
+        data = request.json
+        main_folder = data.get('main_folder')
+        user_params = data.get('params', {})
+
+        if not main_folder:
+            return jsonify({"status": "error", "message": "main_folder es requerido"}), 400
+
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+
+        # Resolver la carpeta principal. Si viene como ruta absoluta (por ej.
+        # tecleada manualmente) se usa tal cual. Si viene como un nombre suelto
+        # (por ej. lo que entrega el selector de carpetas del navegador, que por
+        # seguridad NO expone la ruta absoluta del disco, solo el nombre de la
+        # carpeta) se busca dentro de las ubicaciones conocidas del backend,
+        # igual que ya se hace para archivos individuales en /procesar_flujo.
+        if os.path.isabs(main_folder) and os.path.isdir(main_folder):
+            resolved_folder = os.path.abspath(main_folder)
+        else:
+            search_paths = [
+                os.path.join(backend_dir, "files", "images", main_folder),
+                os.path.join(backend_dir, "files", "output", main_folder),
+                os.path.join(backend_dir, "files", main_folder),
+                main_folder,
+            ]
+            resolved_folder = None
+            for path in search_paths:
+                if os.path.isdir(path):
+                    resolved_folder = os.path.abspath(path)
+                    print(f"[BATCH] Carpeta principal encontrada en: {resolved_folder}")
+                    break
+
+        if resolved_folder is None:
+            return jsonify({
+                "status": "error",
+                "message": (
+                    f"No se encontró la carpeta principal: '{main_folder}'. "
+                    f"Si la seleccionaste con 'Browse', el navegador solo envía el nombre de "
+                    f"la carpeta (por seguridad no expone la ruta completa del disco); en ese "
+                    f"caso colócala dentro de backend/files/images/ o backend/files/output/, "
+                    f"o escribe la ruta absoluta completa manualmente en el campo de texto."
+                )
+            }), 404
+
+        main_folder = resolved_folder
+        ALLOWED_EXTS = ('.zip', '.dim')
+
+        # Subcarpetas de primer nivel (Carpeta_0, Carpeta_1, ..., Carpeta_n)
+        subfolders = sorted([
+            os.path.join(main_folder, d)
+            for d in os.listdir(main_folder)
+            if os.path.isdir(os.path.join(main_folder, d))
+        ])
+
+        if not subfolders:
+            return jsonify({
+                "status": "error",
+                "message": f"No se encontraron subcarpetas dentro de: {main_folder}"
+            }), 404
+
+        print(f"[BATCH] {len(subfolders)} subcarpetas encontradas en {main_folder}")
+
+        resultados = []
+        exitosos = 0
+        fallidos = 0
+
+        for subfolder in subfolders:
+            folder_name = os.path.basename(subfolder)
+            print(f"\n{'=' * 60}\n[BATCH] Procesando carpeta: {folder_name}\n{'=' * 60}")
+
+            # Buscar las 2 imágenes principales dentro de la subcarpeta (nivel raíz,
+            # sin bajar a las carpetas que el propio flujo irá creando dentro).
+            imagenes = sorted([
+                os.path.join(subfolder, f)
+                for f in os.listdir(subfolder)
+                if os.path.isfile(os.path.join(subfolder, f))
+                and f.lower().endswith(ALLOWED_EXTS)
+            ])
+
+            if len(imagenes) < 2:
+                msg = (
+                    f"Se requieren 2 imágenes (.zip o .dim) en '{folder_name}' y se "
+                    f"encontraron {len(imagenes)}."
+                )
+                print(f"[BATCH][ERROR] {msg}")
+                resultados.append({"folder": folder_name, "status": "error", "message": msg})
+                fallidos += 1
+                continue
+
+            imagen1, imagen2 = imagenes[0], imagenes[1]
+            print(f"[BATCH] Imagen 1 (master): {imagen1}")
+            print(f"[BATCH] Imagen 2 (slave):  {imagen2}")
+
+            # La salida de esta carpeta se crea DENTRO de la misma subcarpeta,
+            # al nivel de las imágenes principales.
+            try:
+                result, code = _ejecutar_flujo_completo_core(
+                    [imagen1, imagen2], subfolder, backend_dir, user_params
+                )
+            except Exception as e:
+                print(f"[BATCH][ERROR] Excepción procesando '{folder_name}': {e}")
+                import traceback
+                traceback.print_exc()
+                result, code = {"status": "error", "message": str(e)}, 500
+
+            result["folder"] = folder_name
+            resultados.append(result)
+
+            if result.get("status") == "ok":
+                exitosos += 1
+                print(f"[BATCH] ✅ '{folder_name}' completada. Salida: {result.get('final_output')}")
+            else:
+                fallidos += 1
+                print(f"[BATCH] ❌ '{folder_name}' falló: {result.get('message')}")
+
+        if fallidos == 0:
+            status_general = "ok"
+        elif exitosos > 0:
+            status_general = "partial"
+        else:
+            status_general = "error"
+
+        print(f"\n[BATCH] Terminado. {exitosos} exitosas, {fallidos} fallidas de {len(subfolders)} totales.")
+
+        return jsonify({
+            "status": status_general,
+            "main_folder": main_folder,
+            "total_carpetas": len(subfolders),
+            "exitosos": exitosos,
+            "fallidos": fallidos,
+            "resultados": resultados
+        })
+
+    except Exception as e:
+        print(f"[ERROR] Excepción en procesar_flujo_batch: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/guardar-graph', methods=['POST'])
 def guardar_graph():
     """
@@ -880,6 +1364,206 @@ def files_upload():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+    
+@app.route('/procesar_paso', methods=['POST'])
+def procesar_paso():
+    """
+    Ejecuta los nuevos pasos Python con rutas dinámicas y secuenciales.
+    Versión con streaming de stdout/stderr en paralelo (evita deadlock).
+    """
+    try:
+        data = request.json
+        step = data.get('step')
+        base_output_dir = data.get('output_dir')
+        input_from_user = data.get('input')
+        user_params = data.get('params', {})
+        params = {**DEFAULT_PARAMS, **user_params}
 
+        if not step or not base_output_dir:
+            return jsonify({"status": "error", "message": "step y output_dir son requeridos"}), 400
+
+        base_path = Path(base_output_dir)
+        base_path.mkdir(parents=True, exist_ok=True)
+
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+
+        env = os.environ.copy()
+        env["BASE_DIR"] = str(base_path)
+        env["GPT_BIN"] = "/home/nahin/esa-snap/bin/gpt"
+        env["SNAPHU_BIN"] = "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu"
+
+        # Parámetros configurables del usuario (se inyectan como variables de entorno)
+        env["SNAPHU_TILE_ROWS"] = str(params["snaphu_tile_rows"])
+        env["SNAPHU_TILE_COLS"] = str(params["snaphu_tile_cols"])
+        env["SNAPHU_PROCESSORS"] = str(params["snaphu_processors"])
+        env["SNAPHU_ROW_OVERLAP"] = str(params["snaphu_row_overlap"])
+        env["SNAPHU_COL_OVERLAP"] = str(params["snaphu_col_overlap"])
+        env["SNAPHU_COST_THRESHOLD"] = str(params["snaphu_cost_threshold"])
+        env["COHERENCE_THRESHOLD"] = str(params["coherence_threshold"])
+        env["DISPLACEMENT_MAX_M"] = str(params["displacement_max_m"])
+        env["BAND_MATHS_EXPRESSION"] = str(params.get("band_maths_expression", ""))
+
+        script_path = None
+
+        if step == "SNAPHU_FULL":
+            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "Prueba_Subcarpetas_FUNCIONAL.py")
+            script_path = os.path.abspath(script_path)
+            
+            if input_from_user:
+                subset_dim = input_from_user
+                if not os.path.isabs(subset_dim):
+                    possible_paths = [
+                        os.path.join(base_path, subset_dim),
+                        os.path.join(backend_dir, "files", subset_dim),
+                        os.path.join(backend_dir, "files", "output", subset_dim),
+                        os.path.join(base_path, "files", "output", subset_dim),
+                    ]
+                    found = False
+                    for p in possible_paths:
+                        if os.path.exists(p):
+                            subset_dim = os.path.abspath(p)
+                            found = True
+                            print(f"[DEBUG] Archivo encontrado en: {subset_dim}")
+                            break
+                    if not found:
+                        subset_dim = os.path.abspath(possible_paths[0])
+                        print(f"[DEBUG] Archivo no encontrado, usando fallback: {subset_dim}")
+            else:
+                subset_dim = str(base_path / "Grafo 4 - Final Output" / "output_final_Orb_Orb.dim")
+            
+            env["SUBSET_DIM"] = subset_dim
+            print(f"[DEBUG] SUBSET_DIM final (absoluta) = {subset_dim}")
+            
+            export_dir = base_path / "SnaphuExport"
+            unwrap_dir = base_path / "SnaphuUnwrapping"
+            import_dir = base_path / "SnaphuImport"
+            
+            for folder in [export_dir, unwrap_dir, import_dir]:
+                folder.mkdir(parents=True, exist_ok=True)
+            
+            env["EXPORT_DIR"] = str(export_dir)
+            env["UNWRAP_DIR"] = str(unwrap_dir)
+            env["IMPORT_DIR"] = str(import_dir)
+            env["BASE_FOLDER"] = str(base_path)
+            env["NON_INTERACTIVE"] = "1"
+
+        elif step == "PHASE_TO_DISPLACEMENT":
+            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "phase_to_displacement.py")
+            script_path = os.path.abspath(script_path)
+            
+            # Buscar el archivo .dim generado por SnaphuImport (nombre dinámico)
+            snaphu_import_dir = base_path / "SnaphuImport"
+            dim_files = list(snaphu_import_dir.glob("*.dim"))
+            if dim_files:
+                env["INPUT_DIM"] = str(dim_files[0])
+                print(f"[DEBUG] INPUT_DIM detectado automáticamente: {dim_files[0]}")
+            else:
+                env["INPUT_DIM"] = str(base_path / "SnaphuImport" / "output_final_Orb_Orb_UNW.dim")
+                print(f"[WARN] No se encontró .dim en SnaphuImport, usando fallback")
+
+        elif step == "TERRAIN_CORRECTION":
+            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "TerrainCorrection.py")
+            script_path = os.path.abspath(script_path)
+            
+            # SUBSET_DIM: buscar automáticamente en Grafo 4
+            grafo4_dir = base_path / "Grafo 4 - Final Output"
+            grafo4_files = list(grafo4_dir.glob("*.dim"))
+            if grafo4_files:
+                env["SUBSET_DIM"] = str(grafo4_files[0])
+            else:
+                env["SUBSET_DIM"] = str(base_path / "Grafo 4 - Final Output" / "output_final_Orb_Orb.dim")
+            
+            # DISPLACEMENT_DIM: buscar automáticamente en PhaseToDisplacement
+            disp_dir = base_path / "PhaseToDisplacement"
+            disp_files = list(disp_dir.glob("*.dim"))
+            if disp_files:
+                env["DISPLACEMENT_DIM"] = str(disp_files[0])
+            else:
+                env["DISPLACEMENT_DIM"] = str(base_path / "PhaseToDisplacement" / "output_final_Orb_Orb_DISP.dim")
+
+        else:
+            return jsonify({"status": "error", "message": f"Paso desconocido: {step}"}), 400
+
+        if not Path(script_path).exists():
+            return jsonify({"status": "error", "message": f"Script no encontrado: {script_path}"}), 404
+
+        print(f"[INFO] Ejecutando paso: {step}")
+        print(f"[INFO] Script: {script_path}")
+        print(f"[DEBUG] Enviando NON_INTERACTIVE = {env.get('NON_INTERACTIVE')}")
+        print(f"[DEBUG] Enviando SUBSET_DIM = {env.get('SUBSET_DIM')}")
+
+        # =================================================================
+        # EJECUCIÓN CON STREAMING EN PARALELO (evita deadlock de pipes)
+        # =================================================================
+        import threading
+        import queue
+        
+        collected_stdout = []
+        collected_stderr = []
+        
+        # Usar -u para unbuffered output del script hijo
+        process = subprocess.Popen(
+            ["python3", "-u", script_path],
+            env=env,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            cwd=os.path.dirname(script_path)
+        )
+
+        def read_stdout():
+            try:
+                for line in process.stdout:
+                    line_stripped = line.rstrip()
+                    print(f"[{step}-OUT] {line_stripped}", flush=True)
+                    collected_stdout.append(line_stripped)
+            except Exception as e:
+                print(f"[ERROR] Exception reading stdout: {e}")
+
+        def read_stderr():
+            try:
+                for line in process.stderr:
+                    line_stripped = line.rstrip()
+                    print(f"[{step}-ERR] {line_stripped}", file=sys.stderr, flush=True)
+                    collected_stderr.append(line_stripped)
+            except Exception as e:
+                print(f"[ERROR] Exception reading stderr: {e}")
+
+        # Iniciar threads para leer en paralelo
+        t_out = threading.Thread(target=read_stdout)
+        t_err = threading.Thread(target=read_stderr)
+        t_out.start()
+        t_err.start()
+
+        # Esperar a que el proceso termine
+        process.wait()
+        
+        # Esperar a que los threads terminen de leer
+        t_out.join()
+        t_err.join()
+
+        stdout_text = "\n".join(collected_stdout)
+        stderr_text = "\n".join(collected_stderr)
+
+        if process.returncode == 0:
+            return jsonify({
+                "status": "ok",
+                "message": f"Paso {step} completado exitosamente",
+                "output": stdout_text[-3000:] if len(stdout_text) > 3000 else stdout_text
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "message": f"Error en {step}",
+                "stderr": stderr_text[-3000:] if len(stderr_text) > 3000 else stderr_text
+            }), 500
+
+    except Exception as e:
+        print(f"[ERROR] Excepción en procesar_paso: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    
 if __name__ == '__main__':
     app.run(host='127.0.0.1', port=5000)

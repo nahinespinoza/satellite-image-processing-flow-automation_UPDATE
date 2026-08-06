@@ -13,40 +13,64 @@ export async function obtenerArchivosDisponibles() {
   return response.json();
 }
 
-export async function procesarGraph(graph, input, output) {
-  // Si input es un array (múltiples archivos), convertirlo
+// ==================== MODIFICADA: ahora acepta params ====================
+export async function procesarGraph(graph, input, output, params = {}) {
   const inputData = Array.isArray(input) ? input : input;
-  
+
   const response = await fetch(`${API_BASE}/procesar`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ 
-      graph, 
+    body: JSON.stringify({
+      graph,
       input: inputData,
-      output 
-    })
+      output,
+      params, // <-- NUEVO
+    }),
   });
 
   if (!response.ok) throw new Error("Error al procesar el graph");
   return response.json();
 }
 
-export async function procesarFlujo(inputs, outputDir) {
-  // Convertir a array si es un string
+// ==================== MODIFICADA: ahora acepta params ====================
+export async function procesarFlujo(inputs, outputDir, params = {}) {
   const inputArray = Array.isArray(inputs) ? inputs : [inputs];
-  
+
   const response = await fetch(`${API_BASE}/procesar_flujo`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ 
-      inputs: inputArray.map(f => f.name || f),
-      output_dir: outputDir 
-    })
+    body: JSON.stringify({
+      inputs: inputArray.map((f) => f.name || f),
+      output_dir: outputDir,
+      params, // <-- NUEVO
+    }),
   });
 
   if (!response.ok) throw new Error("Error al procesar el flujo");
   return response.json();
 }
+
+// ==================== MODIFICADA: ahora acepta params ====================
+export async function procesarFlujoBatch(mainFolder, params = {}) {
+  const response = await fetch(`${API_BASE}/procesar_flujo_batch`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      main_folder: mainFolder,
+      params, // <-- NUEVO
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(
+      errorData.message || "Error al procesar el batch de flujos completos",
+    );
+  }
+
+  return response.json();
+}
+
 export async function guardarGraphXML(fileName, content) {
   const response = await fetch(`${API_BASE}/guardar-graph`, {
     method: "POST",
@@ -55,7 +79,28 @@ export async function guardarGraphXML(fileName, content) {
   });
 
   if (!response.ok) throw new Error("Error guardando graph XML");
-
   return response.json();
 }
 
+// ==================== MODIFICADA: ahora acepta params ====================
+export async function procesarPaso(step, input, outputDir, params = {}) {
+  const inputData = Array.isArray(input) ? input : input;
+
+  const response = await fetch(`${API_BASE}/procesar_paso`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      step: step,
+      input: inputData,
+      output_dir: outputDir,
+      params, // <-- NUEVO
+    }),
+  });
+
+  if (!response.ok) {
+    const errorData = await response.json().catch(() => ({}));
+    throw new Error(errorData.message || `Error al procesar el paso ${step}`);
+  }
+
+  return response.json();
+}

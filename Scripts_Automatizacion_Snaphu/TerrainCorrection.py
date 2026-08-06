@@ -30,8 +30,16 @@
 
 import sys
 import re
+import os
 import subprocess
 from pathlib import Path
+
+# Carpeta base principal
+BASE_DIR = Path(os.getenv("BASE_DIR", "/home/nahin/Documentos/SNAP_DOCUMENTATION/Resultados_V1.3/Scripts_Automatizacion_Snaphu"))
+SUBSET_DIM = os.getenv("SUBSET_DIM")
+# Al inicio del script, después de los imports:
+input_dim = os.getenv("INPUT_DIM") or str(BASE_DIR / "SnaphuImport" / "output_final_Orb_Orb_UNW.dim")
+output_folder = os.getenv("OUTPUT_DIR") or str(BASE_DIR / "PhaseToDisplacement")
 
 # =============================================================================
 # COLORES
@@ -60,26 +68,27 @@ def error(msg):   print(f"{C.RED}[ERROR]{C.RESET}  {msg}")
 # === CONFIGURACIÓN === (Rutas relativas basadas en la carpeta raíz)
 # =============================================================================
 
-# 1. Definimos la carpeta base 
-BASE_DIR = Path("/home/nahin/Documentos/SNAP_DOCUMENTATION/Resultados_V1.3")
+# Carpeta base del proyecto
+BASE_DIR = Path(os.getenv("BASE_DIR", "/home/nahin/Documentos/SNAP_DOCUMENTATION/Resultados_V1.3"))
 
-# 2. Ruta del Subset original (Gráfico 4)
-# Mantenemos esta ruta absoluta porque proviene del script anterior y no se genera dinámicamente aquí.
-SUBSET_DIM = "/home/nahin/Documentos/Proyectos_Personales/SNAP V1.1/satellite-image-processing-flow-automation/backend/files/output/output/Grafo4/output_final_Orb_Orb.dim"
+# Ruta del Subset (salida del Gráfico 4) → VIENE DESDE EL BACKEND
+SUBSET_DIM = os.getenv("SUBSET_DIM") or str(
+    BASE_DIR / "Grafo 4 - Final Output" / "output_final_Orb_Orb.dim"
+)
 
-# 3. Ruta del archivo de Displacement (generado en el script anterior)
-# Ahora lo busca dinámicamente dentro de la carpeta PhaseToDisplacement
-DISPLACEMENT_DIM = str(BASE_DIR / "PhaseToDisplacement" / "output_final_Orb_Orb_DISP.dim")
+# Ruta del Displacement (salida del paso anterior)
+DISPLACEMENT_DIM = os.getenv("DISPLACEMENT_DIM") or str(
+    BASE_DIR / "PhaseToDisplacement" / "output_final_Orb_Orb_DISP.dim"
+)
 
-# 4. Carpeta de salida para este script
-# Se creará automáticamente dentro de V1.3
-OUTPUT_FOLDER = str(BASE_DIR / "TerrainCorrection")
+# Carpeta de salida de este paso
+OUTPUT_FOLDER = Path(os.getenv("OUTPUT_DIR") or (BASE_DIR / "TerrainCorrection"))
+OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 
-# Ruta del ejecutable gpt
-GPT_BIN = "/home/nahin/esa-snap/bin/gpt"
+# GPT
+GPT_BIN = os.getenv("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
 
-# Umbral de coherencia del manual
-COHERENCE_THRESHOLD = 0.3
+COHERENCE_THRESHOLD = float(os.getenv("COHERENCE_THRESHOLD", 0.3))
 
 # Parámetros de Terrain Correction
 DEM_NAME = "SRTM 1Sec HGT"
