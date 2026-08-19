@@ -6,10 +6,14 @@ import {
   obtenerConfig,
   obtenerArchivosDisponibles,
   procesarPaso,
+  obtenerProgresoFlujo,
 } from "../api";
 import "./ProcessorUI.css";
 import GraphEditor from "./GraphEditor";
+import MapaVisualizador from "./MapaVisualizador";
 import Visualizador from "./visualizador";
+import { PreviewGallery, BatchPreviewGallery } from "./PreviewGallery";
+
 const soloNombreArchivo = (ruta) => ruta.split("/").pop();
 
 const ProcessorUI = () => {
@@ -24,14 +28,44 @@ const ProcessorUI = () => {
   const [statusColor, setStatusColor] = useState("#888");
   const [selectedStep, setSelectedStep] = useState("GRAFICO_1.xml");
 
-  // ---- Batch ----
+  const [individualPreviews, setIndividualPreviews] = useState([]);
+  const [flowPreviews, setFlowPreviews] = useState([]);
+  const [flowCurrentStep, setFlowCurrentStep] = useState(null);
+  const [batchPreviewFolders, setBatchPreviewFolders] = useState([]);
+  const [todasLasVisualizaciones, setTodasLasVisualizaciones] = useState([]);
+
+  const agregarVisualizaciones = (nuevas, origen) => {
+    setTodasLasVisualizaciones((prev) => [
+      ...prev,
+      ...nuevas.map((v) => ({
+        ...v,
+        origen,
+        id: `${origen}:${v.step}:${Date.now()}:${Math.random()
+          .toString(36)
+          .slice(2, 7)}`,
+      })),
+    ]);
+  };
+
+  const actualizarVisualizacionesDeCorrida = (nuevas, origen, runId) => {
+    setTodasLasVisualizaciones((prev) => {
+      const sinEstaCorrida = prev.filter((v) => v.runId !== runId);
+      const actualizadas = nuevas.map((v) => ({
+        ...v,
+        origen,
+        runId,
+        id: `${runId}:${v.step}`,
+      }));
+      return [...sinEstaCorrida, ...actualizadas];
+    });
+  };
+
   const [mainFolderPath, setMainFolderPath] = useState("");
   const [batchResults, setBatchResults] = useState(null);
   const [batchLoading, setBatchLoading] = useState(false);
   const [batchStatus, setBatchStatus] = useState("");
   const [batchStatusColor, setBatchStatusColor] = useState("#888");
 
-  // ---- Parámetros configurables (con defaults ya escritos) ----
   const [pipelineParams, setPipelineParams] = useState({
     subset_region: "0,0,24165,4188",
     snaphu_tile_rows: 4,
@@ -49,7 +83,6 @@ const ProcessorUI = () => {
     setPipelineParams((prev) => ({ ...prev, [key]: value }));
   };
 
-  // Cargar configuración y archivos disponibles
   useEffect(() => {
     const cargarConfig = async () => {
       try {
@@ -151,9 +184,8 @@ const ProcessorUI = () => {
   };
 
   const removeIndividualFile = (index) => {
-    const newFiles = inputFiles.filter((_, i) => i !== index);
-    setInputFiles(newFiles);
-    setStatus(`Archivo removido`);
+    setInputFiles(inputFiles.filter((_, i) => i !== index));
+    setStatus("Archivo removido");
     setStatusColor("#888");
   };
 
@@ -167,8 +199,7 @@ const ProcessorUI = () => {
   };
 
   const removeFlowFile = (index) => {
-    const newFiles = inputFiles.filter((_, i) => i !== index);
-    setInputFiles(newFiles);
+    setInputFiles(inputFiles.filter((_, i) => i !== index));
   };
 
   const handleDragOver = (event) => {
@@ -187,26 +218,24 @@ const ProcessorUI = () => {
     event.currentTarget.style.borderColor = "#ccc";
     event.currentTarget.style.backgroundColor = "#fafafa";
     const file = event.dataTransfer.files[0];
-    if (file) {
-      if (activeTab === "individual") {
-        if (selectedStep === "GRAFICO_2") {
-          if (!inputFiles.some((f) => f.name === file.name)) {
-            setInputFiles([...inputFiles, file]);
-            setStatus(`Archivo agregado: ${file.name}`);
-          }
-        } else {
-          setInputFile(file);
-          setStatus(`Archivo seleccionado: ${file.name}`);
+    if (!file) return;
+    if (activeTab === "individual") {
+      if (selectedStep === "GRAFICO_2") {
+        if (!inputFiles.some((f) => f.name === file.name)) {
+          setInputFiles([...inputFiles, file]);
+          setStatus(`Archivo agregado: ${file.name}`);
         }
       } else {
-        setInputFiles([...inputFiles, file]);
+        setInputFile(file);
         setStatus(`Archivo seleccionado: ${file.name}`);
       }
-      setStatusColor("#888");
+    } else {
+      setInputFiles([...inputFiles, file]);
+      setStatus(`Archivo seleccionado: ${file.name}`);
     }
+    setStatusColor("#888");
   };
 
-  // ==================== PANEL DE PARÁMETROS (reutilizable) ====================
   const ParamField = ({ label, name, type = "text", hint }) => (
     <div className="form-group" style={{ marginBottom: "8px" }}>
       <label style={{ fontSize: "12px", color: "#555", fontWeight: 600 }}>
@@ -331,7 +360,7 @@ const ProcessorUI = () => {
   const handleProcesarGraph = async () => {
     if (selectedStep === "GRAFICO_2") {
       if (inputFiles.length < 2) {
-        setStatus("❌ Este paso requiere 2 archivos de entrada");
+        setStatus("❌ Este paso requiere 2 archivos (master y slave)");
         setStatusColor("#d32f2f");
         return;
       }
@@ -360,6 +389,7 @@ const ProcessorUI = () => {
       const inputToSend = inputFile
         ? inputFile.name
         : inputFiles.map((f) => f.name);
+      const nuevosPreviews = [];
 
       if (selectedStep === "GRAFICO_2") {
         const inputNameWithoutExt = soloNombreArchivo(
@@ -371,6 +401,7 @@ const ProcessorUI = () => {
           `${outputDir}/${inputNameWithoutExt}_2a`,
           pipelineParams,
         );
+        if (result2a.preview) nuevosPreviews.push(result2a.preview);
         if (result2a.status !== "ok") {
           result = result2a;
         } else {
@@ -380,26 +411,32 @@ const ProcessorUI = () => {
             `${outputDir}/${inputNameWithoutExt}_Cal`,
             pipelineParams,
           );
+          if (result.preview) nuevosPreviews.push(result.preview);
         }
       } else if (selectedStep.endsWith(".xml")) {
         const inputNameWithoutExt = soloNombreArchivo(
           inputFile ? inputFile.name : inputFiles[0].name,
         ).replace(/\.[^/.]+$/, "");
-        const outputFilePath = `${outputDir}/${inputNameWithoutExt}`;
         result = await procesarGraph(
           selectedStep,
           inputToSend,
-          outputFilePath,
+          `${outputDir}/${inputNameWithoutExt}`,
           pipelineParams,
         );
+        if (result.preview) nuevosPreviews.push(result.preview);
       } else {
-        // Pasos Python (5,6,7) — ahora envían parámetros
         result = await procesarPaso(
           selectedStep,
           inputToSend,
           outputDir,
           pipelineParams,
         );
+        if (result.preview) nuevosPreviews.push(result.preview);
+      }
+
+      if (nuevosPreviews.length > 0) {
+        setIndividualPreviews((prev) => [...prev, ...nuevosPreviews]);
+        agregarVisualizaciones(nuevosPreviews, "individual");
       }
 
       clearInterval(progressInterval);
@@ -422,28 +459,65 @@ const ProcessorUI = () => {
   };
 
   const handleProcesarFlujo = async () => {
-    if (inputFiles.length === 0) {
-      setStatus("❌ Selecciona al menos un archivo primero");
+    if (inputFiles.length < 2) {
+      setStatus(
+        "❌ El flujo requiere 2 imágenes (master y slave, Δt ≈ 12 días)",
+      );
       setStatusColor("#d32f2f");
       return;
     }
     setLoading(true);
     setProgress(0);
+    setFlowPreviews([]);
+    setFlowCurrentStep(null);
+    const runId = `flujo-${Date.now()}`;
     setStatus("⏳ Procesando flujo completo (4 gráficos + pasos Python)...");
     setStatusColor("#888");
     const progressInterval = setInterval(() => {
       setProgress((prev) => (prev >= 85 ? 85 : prev + Math.random() * 15));
     }, 500);
 
+    const flujoOutputDir = `${outputDir}/completo`;
+    let pollActivo = true;
+    const pollearProgreso = async () => {
+      while (pollActivo) {
+        try {
+          const prog = await obtenerProgresoFlujo(flujoOutputDir);
+          if (prog && Array.isArray(prog.visualizaciones)) {
+            setFlowPreviews(prog.visualizaciones);
+            actualizarVisualizacionesDeCorrida(
+              prog.visualizaciones,
+              "flujo",
+              runId,
+            );
+          }
+          if (prog && prog.current_step) setFlowCurrentStep(prog.current_step);
+          if (prog && (prog.status === "completado" || prog.status === "error"))
+            break;
+        } catch (pollError) {
+          console.warn("Polling de progreso falló (reintentando):", pollError);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+      }
+    };
+    pollearProgreso();
+
     try {
-      // Ahora enviamos los parámetros configurables
       const result = await procesarFlujo(
         inputFiles,
-        `${outputDir}/completo`,
+        flujoOutputDir,
         pipelineParams,
       );
       clearInterval(progressInterval);
       setProgress(100);
+      setFlowPreviews(result.visualizaciones || []);
+      if (result.visualizaciones) {
+        actualizarVisualizacionesDeCorrida(
+          result.visualizaciones,
+          "flujo",
+          runId,
+        );
+      }
       if (result.status === "ok") {
         setStatus(`✅ Flujo completado. Salida: ${result.final_output}`);
         setStatusColor("#4caf50");
@@ -456,6 +530,8 @@ const ProcessorUI = () => {
       setStatus(`❌ Error: ${error.message}`);
       setStatusColor("#d32f2f");
     } finally {
+      pollActivo = false;
+      setFlowCurrentStep(null);
       setLoading(false);
       setTimeout(() => setProgress(0), 2000);
     }
@@ -486,9 +562,15 @@ const ProcessorUI = () => {
     setBatchStatusColor("#888");
 
     try {
-      // Enviamos parámetros también en batch
       const result = await procesarFlujoBatch(mainFolderPath, pipelineParams);
       setBatchResults(result);
+      setBatchPreviewFolders(
+        (result.resultados || []).map((r) => ({
+          folder: r.folder,
+          status: r.status,
+          visualizaciones: r.visualizaciones || [],
+        })),
+      );
       if (result.status === "ok") {
         setBatchStatus(
           `✅ Batch completado: ${result.exitosos}/${result.total_carpetas} carpetas exitosas`,
@@ -509,6 +591,12 @@ const ProcessorUI = () => {
     } finally {
       setBatchLoading(false);
     }
+  };
+
+  const etiquetaPar = (index) => {
+    if (index === 0) return "① Master";
+    if (index === 1) return "② Slave";
+    return `${index + 1}.`;
   };
 
   return (
@@ -541,6 +629,12 @@ const ProcessorUI = () => {
             📝 Editar Graph XML
           </div>
           <div
+            className={`menu-item ${activeTab === "mapa" ? "active" : ""}`}
+            onClick={() => setActiveTab("mapa")}
+          >
+            🗺️ Mapa geoespacial
+          </div>
+          <div
             className={`menu-item ${activeTab === "visualizador" ? "active" : ""}`}
             onClick={() => setActiveTab("visualizador")}
           >
@@ -557,93 +651,125 @@ const ProcessorUI = () => {
         <div className="header">
           <h1>PROCESAMIENTO DE IMÁGENES SATELITALES</h1>
         </div>
+
         <div className="content">
+          {/* ===== INDIVIDUAL ===== */}
           {activeTab === "individual" && (
             <>
-              <div className="upload-section">
-                <div
-                  className="drop-zone"
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                >
-                  <div className="drop-icon">📁</div>
-                  <p>Arrastra aquí tu archivo .zip o .dim</p>
-                  <label className="file-input-label">
-                    BROWSER FILE
-                    <input
-                      type="file"
-                      onChange={handleFileSelect}
-                      accept=".zip,.dim"
-                      style={{ display: "none" }}
-                    />
-                  </label>
-                  {inputFile && <p className="file-name">✓ {inputFile.name}</p>}
-                </div>
-              </div>
-
-              <div className="control-panel">
-                <h2>Configuración</h2>
-                <div className="form-group">
-                  <label>Selecciona un Paso:</label>
-                  <select
-                    value={selectedStep}
-                    onChange={(e) => {
-                      setSelectedStep(e.target.value);
-                      setInputFile(null);
-                      setInputFiles([]);
-                    }}
-                    disabled={loading}
+              <div className="content-row">
+                <div className="upload-section">
+                  <div
+                    className="drop-zone"
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
                   >
-                    {processingOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {selectedStep === "GRAFICO_2" && inputFiles.length > 0 && (
-                  <div className="files-list">
-                    <label>Archivos agregados:</label>
-                    <div className="file-items">
-                      {inputFiles.map((file, index) => (
-                        <div key={index} className="file-item">
-                          <span>📄 {file.name}</span>
-                          <button
-                            className="remove-btn"
-                            onClick={() => removeIndividualFile(index)}
-                            disabled={loading}
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      ))}
-                    </div>
+                    <div className="drop-icon">📁</div>
+                    {selectedStep === "GRAFICO_2" ? (
+                      <>
+                        <p className="drop-title">
+                          Par interferométrico (2 imágenes)
+                        </p>
+                        <p className="drop-hint">
+                          1ª = Master (día base) · 2ª = Slave (+12 días)
+                        </p>
+                      </>
+                    ) : (
+                      <p>Arrastra aquí tu archivo .zip o .dim</p>
+                    )}
+                    <label className="file-input-label">
+                      {selectedStep === "GRAFICO_2"
+                        ? "AGREGAR IMAGEN"
+                        : "BROWSER FILE"}
+                      <input
+                        type="file"
+                        onChange={handleFileSelect}
+                        accept=".zip,.dim"
+                        style={{ display: "none" }}
+                      />
+                    </label>
+                    {inputFile && (
+                      <p className="file-name">✓ {inputFile.name}</p>
+                    )}
                   </div>
-                )}
-
-                <div className="form-group">
-                  <label>Carpeta de Salida:</label>
-                  <input
-                    type="text"
-                    value={outputDir}
-                    onChange={(e) => setOutputDir(e.target.value)}
-                    placeholder="C:\output"
-                    disabled={loading}
-                  />
                 </div>
 
-                {/* PARÁMETROS AVANZADOS (visible en individual para pasos que lo usan) */}
-                <AdvancedParamsPanel />
+                <div className="control-panel">
+                  <h2>Configuración</h2>
+                  <div className="form-group">
+                    <label>Selecciona un Paso:</label>
+                    <select
+                      value={selectedStep}
+                      onChange={(e) => {
+                        setSelectedStep(e.target.value);
+                        setInputFile(null);
+                        setInputFiles([]);
+                      }}
+                      disabled={loading}
+                    >
+                      {processingOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
 
-                {(archivosDisponibles.images?.length > 0 ||
-                  archivosDisponibles.output?.length > 0) && (
-                  <div className="available-files">
-                    <label>📁 Archivos en el servidor:</label>
-                    <div className="files-dropdown">
-                      {archivosDisponibles.images &&
-                        archivosDisponibles.images.length > 0 && (
+                  {selectedStep === "GRAFICO_2" && (
+                    <div className="files-list">
+                      <label>Imágenes del par:</label>
+                      <div className="file-items">
+                        {inputFiles.map((file, index) => (
+                          <div key={index} className="file-item">
+                            <span>
+                              {etiquetaPar(index)}: {file.name}
+                            </span>
+                            <button
+                              className="remove-btn"
+                              onClick={() => removeIndividualFile(index)}
+                              disabled={loading}
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                      {inputFiles.length < 2 && (
+                        <p className="flow-note">
+                          Falta la{" "}
+                          {inputFiles.length === 0
+                            ? "1ª imagen (Master)"
+                            : "2ª imagen (Slave)"}
+                          .
+                        </p>
+                      )}
+                      {inputFiles.length >= 2 && (
+                        <p className="flow-note" style={{ color: "#2e7d32" }}>
+                          Par completo: listo para procesar.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="form-group">
+                    <label>Carpeta de Salida:</label>
+                    <input
+                      type="text"
+                      value={outputDir}
+                      onChange={(e) => setOutputDir(e.target.value)}
+                      placeholder="C:\output"
+                      disabled={loading}
+                    />
+                  </div>
+
+                  <AdvancedParamsPanel />
+
+                  {(archivosDisponibles.images?.length > 0 ||
+                    archivosDisponibles.output?.length > 0) && (
+                    <div className="available-files">
+                      <label>📁 Archivos en el servidor:</label>
+                      <div className="files-dropdown">
+                        {archivosDisponibles.images?.length > 0 && (
                           <>
                             <div className="file-category-header">
                               📥 Entrada (images)
@@ -663,8 +789,7 @@ const ProcessorUI = () => {
                             ))}
                           </>
                         )}
-                      {archivosDisponibles.output &&
-                        archivosDisponibles.output.length > 0 && (
+                        {archivosDisponibles.output?.length > 0 && (
                           <>
                             <div className="file-category-header">
                               📤 Salida procesada (output)
@@ -684,73 +809,104 @@ const ProcessorUI = () => {
                             ))}
                           </>
                         )}
+                      </div>
                     </div>
-                  </div>
-                )}
+                  )}
 
-                <button
-                  className="process-button"
-                  onClick={handleProcesarGraph}
-                  disabled={loading}
-                >
-                  {loading ? "Procesando..." : "PROCESAR GRÁFICO"}
-                </button>
-
-                {progress > 0 && (
-                  <div className="progress-container">
-                    <div className="progress-bar">
-                      <div
-                        className="progress-fill"
-                        style={{ width: `${progress}%` }}
-                      ></div>
-                    </div>
-                    <p className="progress-text">{Math.round(progress)}%</p>
-                  </div>
-                )}
-                {status && (
-                  <div
-                    className="status-box"
-                    style={{ borderLeftColor: statusColor }}
+                  <button
+                    className="process-button"
+                    onClick={handleProcesarGraph}
+                    disabled={loading}
                   >
-                    <p>{status}</p>
-                  </div>
-                )}
-              </div>
-            </>
-          )}
+                    {loading ? "Procesando..." : "PROCESAR GRÁFICO"}
+                  </button>
 
-          {activeTab === "flujo" && (
-            <>
-              <div className="upload-section">
-                <div
-                  className="drop-zone"
-                  onDragOver={handleDragOver}
-                  onDragLeave={handleDragLeave}
-                  onDrop={handleDrop}
-                >
-                  <div className="drop-icon">📁</div>
-                  <p>Arrastra aquí archivos adicionales (.zip o .dim)</p>
-                  <label className="file-input-label">
-                    AGREGAR ARCHIVO
-                    <input
-                      type="file"
-                      onChange={handleFlowFileSelect}
-                      accept=".zip,.dim"
-                      style={{ display: "none" }}
-                    />
-                  </label>
+                  {progress > 0 && (
+                    <div className="progress-container">
+                      <div className="progress-bar">
+                        <div
+                          className="progress-fill"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                      <p className="progress-text">{Math.round(progress)}%</p>
+                    </div>
+                  )}
+                  {status && (
+                    <div
+                      className="status-box"
+                      style={{ borderLeftColor: statusColor }}
+                    >
+                      <p>{status}</p>
+                    </div>
+                  )}
                 </div>
               </div>
 
-              <div className="control-panel">
-                <h2>Flujo Completo - Archivos de Entrada</h2>
-                {inputFiles.length > 0 && (
+              {individualPreviews.length > 0 && (
+                <div className="control-panel control-panel-full">
+                  <div className="preview-header">
+                    <h2 style={{ margin: 0 }}>Previews de este gráfico</h2>
+                    <button
+                      className="link-btn"
+                      onClick={() => setIndividualPreviews([])}
+                    >
+                      Limpiar
+                    </button>
+                  </div>
+                  <PreviewGallery items={individualPreviews} title="" />
+                  <p className="flow-note" style={{ marginTop: "10px" }}>
+                    Los productos también quedan disponibles en 🗺️ Mapa
+                    geoespacial para comparar. Para paletas de color usa 🖼️
+                    Visualizador.
+                  </p>
+                </div>
+              )}
+            </>
+          )}
+
+          {/* ===== FLUJO ===== */}
+          {activeTab === "flujo" && (
+            <>
+              <div className="content-row">
+                <div className="upload-section">
+                  <div
+                    className="drop-zone"
+                    onDragOver={handleDragOver}
+                    onDragLeave={handleDragLeave}
+                    onDrop={handleDrop}
+                  >
+                    <div className="drop-icon">📁</div>
+                    <p className="drop-title">
+                      Par interferométrico (2 imágenes Sentinel-1)
+                    </p>
+                    <p className="drop-hint">
+                      Agrega primero la Master (día base) y luego la Slave (+12
+                      días exactos)
+                    </p>
+                    <label className="file-input-label">
+                      AGREGAR IMAGEN
+                      <input
+                        type="file"
+                        onChange={handleFlowFileSelect}
+                        accept=".zip,.dim"
+                        style={{ display: "none" }}
+                      />
+                    </label>
+                  </div>
+                </div>
+
+                <div className="control-panel">
+                  <h2>Flujo Completo</h2>
+
                   <div className="files-list">
-                    <label>Archivos agregados:</label>
+                    <label>Imágenes del par:</label>
                     <div className="file-items">
                       {inputFiles.map((file, index) => (
                         <div key={index} className="file-item">
-                          <span>📄 {file.name}</span>
+                          <span>
+                            {etiquetaPar(index)}: {file.name}
+                          </span>
                           <button
                             className="remove-btn"
                             onClick={() => removeFlowFile(index)}
@@ -761,87 +917,118 @@ const ProcessorUI = () => {
                         </div>
                       ))}
                     </div>
+                    {inputFiles.length === 0 && (
+                      <p className="flow-note">
+                        Aún no hay imágenes. Agrega la 1ª (Master).
+                      </p>
+                    )}
+                    {inputFiles.length === 1 && (
+                      <p className="flow-note">
+                        Falta la 2ª imagen (Slave, +12 días).
+                      </p>
+                    )}
+                    {inputFiles.length >= 2 && (
+                      <p className="flow-note" style={{ color: "#2e7d32" }}>
+                        Par completo: listo para procesar.
+                      </p>
+                    )}
                   </div>
-                )}
 
-                <div className="form-group">
-                  <label>Carpeta de Salida:</label>
-                  <input
-                    type="text"
-                    value={outputDir}
-                    onChange={(e) => setOutputDir(e.target.value)}
-                    placeholder="C:\output"
-                    disabled={loading}
-                  />
-                </div>
-
-                {/* PANEL DE PARÁMETROS EN FLUJO */}
-                <AdvancedParamsPanel />
-
-                <div className="flow-info">
-                  <h3>Secuencia de Procesamiento:</h3>
-                  <ul>
-                    <li>📍 Gráfico 1: Orbit Correction</li>
-                    <li>📍 Gráfico 2: Calibration (interferometry)</li>
-                    <li>📍 Gráfico 3: Terrain Correction</li>
-                    <li>📍 Gráfico 4: Subset</li>
-                    <li>📍 Paso 5: Snaphu Export / Unwrap / Import</li>
-                    <li>📍 Paso 6: Phase to Displacement</li>
-                    <li>📍 Paso 7: Terrain Correction + Máscara</li>
-                  </ul>
-                  <p className="flow-note">
-                    La salida de cada paso será la entrada del siguiente.
-                  </p>
-                </div>
-
-                <button
-                  className="process-button"
-                  onClick={handleProcesarFlujo}
-                  disabled={loading || inputFiles.length === 0}
-                >
-                  {loading ? "Procesando flujo..." : "PROCESAR FLUJO COMPLETO"}
-                </button>
-
-                {progress > 0 && (
-                  <div className="progress-container">
-                    <div className="progress-bar">
-                      <div
-                        className="progress-fill"
-                        style={{ width: `${progress}%` }}
-                      ></div>
-                    </div>
-                    <p className="progress-text">{Math.round(progress)}%</p>
+                  <div className="form-group">
+                    <label>Carpeta de Salida:</label>
+                    <input
+                      type="text"
+                      value={outputDir}
+                      onChange={(e) => setOutputDir(e.target.value)}
+                      placeholder="C:\output"
+                      disabled={loading}
+                    />
                   </div>
-                )}
-                {status && (
-                  <div
-                    className="status-box"
-                    style={{ borderLeftColor: statusColor }}
+
+                  <AdvancedParamsPanel />
+
+                  <div className="flow-info">
+                    <h3>Secuencia de Procesamiento:</h3>
+                    <ul>
+                      <li>📍 Gráfico 1: Orbit Correction</li>
+                      <li>📍 Gráfico 2: Calibration (interferometry)</li>
+                      <li>📍 Gráfico 3: Terrain Correction</li>
+                      <li>📍 Gráfico 4: Subset</li>
+                      <li>📍 Paso 5: Snaphu Export / Unwrap / Import</li>
+                      <li>📍 Paso 6: Phase to Displacement</li>
+                      <li>📍 Paso 7: Terrain Correction + Máscara</li>
+                    </ul>
+                    <p className="flow-note">
+                      La salida de cada paso será la entrada del siguiente.
+                    </p>
+                  </div>
+
+                  <button
+                    className="process-button"
+                    onClick={handleProcesarFlujo}
+                    disabled={loading || inputFiles.length < 2}
                   >
-                    <p>{status}</p>
-                  </div>
+                    {loading
+                      ? "Procesando flujo..."
+                      : "PROCESAR FLUJO COMPLETO"}
+                  </button>
+
+                  {progress > 0 && (
+                    <div className="progress-container">
+                      <div className="progress-bar">
+                        <div
+                          className="progress-fill"
+                          style={{ width: `${progress}%` }}
+                        />
+                      </div>
+                      <p className="progress-text">{Math.round(progress)}%</p>
+                    </div>
+                  )}
+                  {loading && flowCurrentStep && (
+                    <p className="current-step">
+                      🔄 Ejecutando: {flowCurrentStep}
+                    </p>
+                  )}
+                  {status && (
+                    <div
+                      className="status-box"
+                      style={{ borderLeftColor: statusColor }}
+                    >
+                      <p>{status}</p>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="control-panel control-panel-full">
+                <PreviewGallery
+                  items={flowPreviews}
+                  title="Previews del flujo completo (pasos 1-7)"
+                />
+                {flowPreviews.length === 0 && (
+                  <p className="flow-note">
+                    Los previews aparecerán aquí al terminar cada paso. Para
+                    comparar pares en el mapa usa 🗺️ Mapa geoespacial; para
+                    paletas de color, 🖼️ Visualizador.
+                  </p>
                 )}
               </div>
             </>
           )}
 
+          {/* ===== BATCH ===== */}
           {activeTab === "batch" && (
-            <>
-              <div className="control-panel">
+            <div className="content-row">
+              <div
+                className="control-panel"
+                style={{ width: "100%", maxWidth: "520px" }}
+              >
                 <h2>Batch de Flujos Completos</h2>
                 <p className="flow-note">
-                  Procesa muchas parejas de imágenes de una sola vez. La carpeta
-                  principal debe tener una subcarpeta por cada par de imágenes:
+                  Procesa muchas parejas de una sola vez. Cada subcarpeta = un
+                  par (2 imágenes, Δt ≈ 12 días):
                 </p>
-                <pre
-                  style={{
-                    background: "#f5f5f5",
-                    padding: "10px 14px",
-                    borderRadius: "6px",
-                    fontSize: "13px",
-                    overflowX: "auto",
-                  }}
-                >
+                <pre className="batch-tree">
                   {`Carpeta_main/
   Carpeta_0/  -> Img1, Img2
   Carpeta_1/  -> Img1, Img2
@@ -860,23 +1047,7 @@ const ProcessorUI = () => {
                       disabled={batchLoading}
                       style={{ flex: 1 }}
                     />
-                    <label
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        margin: 0,
-                        padding: "10px 18px",
-                        background: batchLoading ? "#a9b4e8" : "#667eea",
-                        color: "#fff",
-                        borderRadius: "6px",
-                        fontWeight: 600,
-                        fontSize: "13px",
-                        cursor: batchLoading ? "not-allowed" : "pointer",
-                        whiteSpace: "nowrap",
-                        userSelect: "none",
-                      }}
-                    >
+                    <label className="browse-btn">
                       📁 BROWSE
                       <input
                         type="file"
@@ -891,7 +1062,6 @@ const ProcessorUI = () => {
                   </div>
                 </div>
 
-                {/* PANEL DE PARÁMETROS EN BATCH */}
                 <AdvancedParamsPanel />
 
                 <button
@@ -916,9 +1086,9 @@ const ProcessorUI = () => {
                 {batchResults && Array.isArray(batchResults.resultados) && (
                   <div className="files-list" style={{ marginTop: "16px" }}>
                     <label>
-                      Resultado por carpeta ({batchResults.exitosos} ok /{" "}
+                      Resultado ({batchResults.exitosos} ok /{" "}
                       {batchResults.fallidos} error de{" "}
-                      {batchResults.total_carpetas} totales):
+                      {batchResults.total_carpetas}):
                     </label>
                     <div className="file-items">
                       {batchResults.resultados.map((r, idx) => (
@@ -946,11 +1116,25 @@ const ProcessorUI = () => {
                     </div>
                   </div>
                 )}
+
+                <BatchPreviewGallery folders={batchPreviewFolders} />
               </div>
-            </>
+            </div>
           )}
 
           {activeTab === "edit-xml" && <GraphEditor />}
+
+          {/* ===== MAPA GEOESPACIAL (comparar / cargar disco) ===== */}
+          {activeTab === "mapa" && (
+            <MapaVisualizador
+              items={todasLasVisualizaciones}
+              title="Mapa geoespacial — comparar y cargar resultados"
+              outputDir={outputDir}
+              onAddItems={(nuevos) => agregarVisualizaciones(nuevos, "disco")}
+            />
+          )}
+
+          {/* ===== VISUALIZADOR CLÁSICO (colores, zoom, etc.) ===== */}
           {activeTab === "visualizador" && <Visualizador />}
         </div>
       </div>

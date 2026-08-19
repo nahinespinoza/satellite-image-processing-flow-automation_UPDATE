@@ -9,7 +9,11 @@ from PIL import Image
 import io
 import tempfile
 import uuid
+import glob
 from pathlib import Path
+import re  
+import json
+import numpy as np
 
 app = Flask(__name__)
 CORS(app)
@@ -68,6 +72,59 @@ def carpeta_para_grafo(graph_path):
     """Devuelve el nombre de carpeta descriptivo para un archivo de gráfico dado."""
     basename = os.path.basename(graph_path)
     return GRAPH_LABELS.get(basename, os.path.splitext(basename)[0])
+
+
+# Patrón(es) de banda a exportar como preview para cada gráfico XML,
+# reutilizando el mismo criterio que ya usa el flujo completo (_exportar_viz)
+# para que el preview de un gráfico individual luzca igual que su
+# contraparte dentro del flujo completo.
+BAND_PATTERNS_BY_GRAPH = {
+    "GRAFICO_1.xml": "Intensity",
+    "GRAFICO_2a.xml": "Intensity",
+    "GRAFICO_2b.xml": ["Phase_ifg", "Phase"],
+    "GRAFICO_3.xml": "Phase",
+    "GRAFICO_4.xml": "Phase",
+}
+
+# Igual, pero para los procesadores Python (pasos 5, 6 y 7) ejecutados de
+# forma individual desde /procesar_paso.
+BAND_PATTERNS_BY_STEP = {
+    "SNAPHU_FULL": ["Unw.*Phase", "Phase"],
+    "SNAPHU_EXPORT": ["Unw.*Phase", "Phase"],
+    "SNAPHU_UNWRAPPING": ["Unw.*Phase", "Phase"],
+    "PHASE_TO_DISPLACEMENT": "displacement",
+    "TERRAIN_CORRECTION": "displacement_masked",
+}
+
+
+def _generar_preview_individual(dim_path, band_pattern, label):
+    """
+    Genera un preview (GeoTIFF + quicklook PNG) para un .dim resultante de
+    un paso ejecutado de forma INDIVIDUAL (no como parte del flujo completo).
+    El preview se guarda junto al propio .dim, en una subcarpeta "previews"
+    dentro de la misma carpeta de salida, para no mezclarse con los .data
+    internos de SNAP.
+
+    Nunca lanza excepción: si algo falla, devuelve un dict con status "error"
+    y un mensaje, para no interrumpir la respuesta principal de /procesar o
+    /procesar_paso.
+    """
+    try:
+        dim_dir = os.path.dirname(dim_path)
+        preview_dir = os.path.join(dim_dir, "previews")
+        dim_name = os.path.splitext(os.path.basename(dim_path))[0]
+        preview_tiff = os.path.join(preview_dir, f"{dim_name}_preview.tif")
+
+        resultado = exportar_banda_a_geotiff(
+            dim_path, band_pattern, preview_tiff,
+            gpt_bin="/home/nahin/esa-snap/bin/gpt",
+            label=label,
+        )
+        resultado["step"] = label
+        return resultado
+    except Exception as e:
+        return {"status": "error", "message": f"[{label}] no se pudo generar preview: {e}",
+                "output_tiff": None, "band_name": None, "step": label}
 
 @app.route('/config', methods=['GET'])
 def get_config():
@@ -185,6 +242,28 @@ def procesar():
                         break
             
             if abs_path is None or not os.path.exists(abs_path):
+                # Fallback: los outputs de cada gráfico quedan en subcarpetas
+                # (ej. "Grafo 1 - Orbit/archivo.dim"), y las search_paths de
+                # arriba solo miran un nivel directo dentro de files/output,
+                # sin bajar a esas subcarpetas. Antes de rendirse, se busca
+                # el archivo por nombre en cualquier subcarpeta de output.
+                # Si hay varias coincidencias (mismo nombre en distintos
+                # gráficos), se toma la modificada más recientemente, que es
+                # la más probable de ser la que se acaba de generar.
+                if not os.path.isabs(input_file):
+                    basename = os.path.basename(input_file)
+                    candidatos = glob.glob(
+                        os.path.join(backend_dir, "files", "output", "**", basename),
+                        recursive=True,
+                    )
+                    if candidatos:
+                        abs_path = max(candidatos, key=os.path.getmtime)
+                        print(
+                            f"[DEBUG] '{input_file}' no estaba en la ubicación "
+                            f"esperada; encontrado por búsqueda recursiva en: {abs_path}"
+                        )
+
+            if abs_path is None or not os.path.exists(abs_path):
                 return jsonify({
                     "status": "error",
                     "message": f"Archivo no encontrado: {input_file}"
@@ -224,7 +303,16 @@ def procesar():
         result = subprocess.run(cmd_list, capture_output=True, text=True)
 
         if result.returncode == 0:
-            return jsonify({"status": "ok", "output": output_file})
+            # Generar preview de la banda relevante para este gráfico, igual
+            # que se hace dentro del flujo completo, para que el panel de
+            # procesamiento pueda mostrarlo debajo sin tener que ir al
+            # Visualizador.
+            graph_basename = os.path.basename(graph)
+            band_pattern = BAND_PATTERNS_BY_GRAPH.get(graph_basename, ["Intensity", "Phase", ".*"])
+            preview = _generar_preview_individual(
+                output_file, band_pattern, GRAPH_LABELS.get(graph_basename, graph_basename)
+            )
+            return jsonify({"status": "ok", "output": output_file, "preview": preview})
         else:
             return jsonify({"status": "error", "message": result.stderr})
     except FileNotFoundError as e:
@@ -249,7 +337,51 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
     con la respuesta (responder directo o acumular en un batch).
     """
     output_dir = os.path.abspath(output_dir)
-    os.makedirs(output_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)  
+    viz_dir = os.path.join(output_dir, "visualizaciones")
+    visualizaciones_generadas = []
+    progreso_path = os.path.join(output_dir, "progreso.json")
+
+    def _actualizar_progreso(status="en_progreso", current_step=None, message=None):
+        """
+        Escribe el estado actual del flujo a disco (progreso.json) para que
+        el frontend pueda leerlo por polling (endpoint /flujo-progreso) y
+        mostrar cada preview apenas está lista, sin esperar a que termine
+        todo el flujo (que puede tardar minutos u horas).
+        """
+        try:
+            data = {
+                "status": status,
+                "current_step": current_step,
+                "message": message,
+                "visualizaciones": visualizaciones_generadas,
+                "updated_at": datetime.now().isoformat(),
+            }
+            tmp_path = progreso_path + ".tmp"
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            os.replace(tmp_path, progreso_path)
+        except Exception as e:
+            # Nunca debe interrumpir el flujo principal por un problema
+            # escribiendo el archivo de progreso.
+            print(f"[WARN] No se pudo escribir progreso.json: {e}")
+
+    def _exportar_viz(step_label, dim_path, band_pattern, filename):
+        _actualizar_progreso(status="en_progreso", current_step=step_label)
+        r = exportar_banda_a_geotiff(
+            dim_path, band_pattern,
+            os.path.join(viz_dir, filename),
+            gpt_bin=GPT_PATH,
+            label=step_label,
+        )
+        visualizaciones_generadas.append({"step": step_label, **r})
+        _actualizar_progreso(status="en_progreso", current_step=step_label)
+        return r
+
+    # Progreso inicial: limpia cualquier progreso de una corrida anterior en
+    # esta misma carpeta de salida, para que el polling no muestre datos
+    # obsoletos apenas arranca esta nueva corrida.
+    _actualizar_progreso(status="en_progreso", current_step="Iniciando")
 
     # --- Mezclar parámetros del usuario con los por defecto ---
     user_params = user_params or {}
@@ -323,13 +455,15 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         return output_file
 
     if len(absolute_input_files) < 2:
+        msg = (
+            "El flujo requiere dos imágenes (master y slave) para el Gráfico 2a "
+            "(Back-Geocoding). Sólo se recibió una."
+        )
+        _actualizar_progreso(status="error", current_step="1-4", message=msg)
         return {
             "status": "error",
             "step": "1-4",
-            "message": (
-                "El flujo requiere dos imágenes (master y slave) para el Gráfico 2a "
-                "(Back-Geocoding). Sólo se recibió una."
-            )
+            "message": msg
         }, 400
 
     name1 = os.path.splitext(os.path.basename(absolute_input_files[0]))[0]
@@ -341,12 +475,14 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
             "1", absolute_input_files[0],
             os.path.join(folder_1, f"{name1}_step_1.dim")
         )
+        _exportar_viz("Paso 1 (master)", out1_master, "Intensity", "paso1_master_Intensity.tif")
 
         name2 = os.path.splitext(os.path.basename(absolute_input_files[1]))[0]
         out1_slave = ejecutar_grafo(
             "1", absolute_input_files[1],
             os.path.join(folder_1, f"{name2}_step_1.dim")
         )
+        _exportar_viz("Paso 1 (slave)", out1_slave, "Intensity", "paso1_slave_Intensity.tif")
 
         # --- Paso 2a: Back-Geocoding, recibe las DOS salidas del paso 1 ---
         out2a = ejecutar_grafo(
@@ -354,18 +490,21 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
             os.path.join(output_dir, carpeta_para_grafo(graph_files["2a"]), f"{name1}_step_2a.dim"),
             input2=out1_slave
         )
+        _exportar_viz("Paso 2a", out2a, "Intensity", "paso2a_Intensity.tif")
 
         # --- Paso 2b: Interferogram, recibe la salida de 2a ---
         out2b = ejecutar_grafo(
             "2b", out2a,
             os.path.join(output_dir, carpeta_para_grafo(graph_files["2b"]), f"{name1}_step_2b.dim")
         )
+        _exportar_viz("Paso 2b", out2b, ["Phase_ifg", "Phase"], "paso2b_Phase.tif")
 
         # --- Paso 3: Terrain Correction, recibe la salida de 2b ---
         out3 = ejecutar_grafo(
             "3", out2b,
             os.path.join(output_dir, carpeta_para_grafo(graph_files["3"]), f"{name1}_step_3.dim")
         )
+        _exportar_viz("Paso 3", out3, "Phase", "paso3_Phase.tif")
 
         # --- Paso 4: Subset, recibe la salida de 3 ---
         out4 = ejecutar_grafo(
@@ -373,8 +512,10 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
             os.path.join(output_dir, carpeta_para_grafo(graph_files["4"]), f"{name1}_step_4.dim"),
             extra_params={"subsetRegion": params["subset_region"]}
         )
+        _exportar_viz("Paso 4", out4, "Phase", "paso4_Phase.tif")
     except RuntimeError as e:
-        return {"status": "error", "step": "1-4", "message": str(e)}, 500
+        _actualizar_progreso(status="error", current_step="1-4", message=str(e))
+        return {"status": "error", "step": "1-4", "message": str(e), "visualizaciones": visualizaciones_generadas}, 500
 
     current_input = out4
 
@@ -471,6 +612,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
                 env["DISPLACEMENT_DIM"] = str(base_path / "PhaseToDisplacement" / "output_final_Orb_Orb_DISP.dim")
 
         if not Path(script_path).exists():
+            _actualizar_progreso(status="error", current_step=label, message=f"Script no encontrado: {script_path}")
             return {
                 "status": "error",
                 "step": label,
@@ -493,7 +635,8 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
                 f"Verifica que el paso anterior se haya ejecutado correctamente."
             )
             print(f"[ERROR] {error_msg}")
-            return {"status": "error", "step": label, "message": error_msg}, 500
+            _actualizar_progreso(status="error", current_step=label, message=error_msg)
+            return {"status": "error", "step": label, "message": error_msg, "visualizaciones": visualizaciones_generadas}, 500
         elif input_check:
             file_size_mb = os.path.getsize(input_check) / (1024 * 1024)
             print(f"[DEBUG] Paso {label}: entrada válida -> {input_check} ({file_size_mb:.2f} MB)")
@@ -501,6 +644,8 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         # Ejecución con streaming en paralelo (igual que procesar_paso)
         import threading
         import sys
+
+        _actualizar_progreso(status="en_progreso", current_step=label)
 
         collected_stdout = []
         collected_stderr = []
@@ -539,14 +684,15 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
 
         if process.returncode != 0:
             print(f"[ERROR] Paso {label} ({step_name}) falló.")
+            _actualizar_progreso(status="error", current_step=label, message=f"Error en {step_name}")
             return {
                 "status": "error",
                 "step": label,
                 "message": f"Error en {step_name}",
-                "stderr": stderr_text[-3000:] if len(stderr_text) > 3000 else stderr_text
+                "stderr": stderr_text[-3000:] if len(stderr_text) > 3000 else stderr_text,
+                "visualizaciones": visualizaciones_generadas
             }, 500
 
-        # --- Validación: verificar salidas del paso Python ---
         if step_name == "SNAPHU_FULL":
             # Verificar que se generó al menos un .dim en SnaphuImport
             import_dir = base_path / "SnaphuImport"
@@ -554,9 +700,11 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
             if not dim_files:
                 error_msg = f"El paso {label} (SNAPHU_FULL) no generó archivos .dim en {import_dir}"
                 print(f"[ERROR] {error_msg}")
-                return {"status": "error", "step": label, "message": error_msg}, 500
+                _actualizar_progreso(status="error", current_step=label, message=error_msg)
+                return {"status": "error", "step": label, "message": error_msg, "visualizaciones": visualizaciones_generadas}, 500
             current_input = str(dim_files[0])
             print(f"[DEBUG] Paso {label}: salida detectada -> {current_input}")
+            _exportar_viz("Paso 5", current_input, ["Unw.*Phase", "Phase"], "paso5_UnwPhase.tif")  # <-- NUEVO
 
         elif step_name == "PHASE_TO_DISPLACEMENT":
             disp_dir = base_path / "PhaseToDisplacement"
@@ -564,21 +712,30 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
             if not dim_files:
                 error_msg = f"El paso {label} (PHASE_TO_DISPLACEMENT) no generó archivos .dim en {disp_dir}"
                 print(f"[ERROR] {error_msg}")
-                return {"status": "error", "step": label, "message": error_msg}, 500
+                _actualizar_progreso(status="error", current_step=label, message=error_msg)
+                return {"status": "error", "step": label, "message": error_msg, "visualizaciones": visualizaciones_generadas}, 500
             current_input = str(dim_files[0])
             print(f"[DEBUG] Paso {label}: salida detectada -> {current_input}")
+            _exportar_viz("Paso 6", current_input, "displacement", "paso6_Displacement.tif")  # <-- NUEVO
 
         elif step_name == "TERRAIN_CORRECTION":
             # TerrainCorrection no genera un .dim nuevo, usa el de displacement
             # Verificar que el script terminó bien
             print(f"[DEBUG] Paso {label}: TerrainCorrection completado (sin nuevo .dim)")
+            # <-- NUEVO: bloque completo de aquí abajo
+            tc_dir = base_path / "TerrainCorrection"
+            tc_files = list(tc_dir.glob("Stack_TC_Masked.dim")) or list(tc_dir.glob("*.dim"))
+            if tc_files:
+                _exportar_viz("Paso 7", str(tc_files[0]), "displacement_masked", "paso7_Masked.tif")
+            else:
+                print(f"[WARN] Paso 7: no se encontró .dim final en {tc_dir}, se omite export de visualización")
 
-        print(f"✅ Paso {label} (Python: {step_name}) completado.")
-
+    _actualizar_progreso(status="completado", current_step="Finalizado")
     return {
         "status": "ok",
         "message": "Flujo completo ejecutado correctamente (pasos 1-7)",
-        "final_output": current_input
+        "final_output": current_input,
+        "visualizaciones": visualizaciones_generadas
     }, 200
 
 @app.route('/procesar_flujo', methods=['POST'])
@@ -667,6 +824,44 @@ def procesar_flujo():
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/flujo-progreso', methods=['GET'])
+def flujo_progreso():
+    """
+    Devuelve el estado actual de un flujo completo en ejecución, leyendo el
+    progreso.json que _ejecutar_flujo_completo_core va escribiendo después
+    de cada paso. Pensado para que el frontend haga polling mientras
+    /procesar_flujo sigue corriendo, y así mostrar cada preview apenas está
+    lista en vez de esperar a que termine todo el flujo.
+
+    Uso: GET /flujo-progreso?output_dir=/ruta/absoluta/usada/en/procesar_flujo
+    """
+    try:
+        output_dir = request.args.get('output_dir')
+        if not output_dir:
+            return jsonify({"status": "error", "message": "output_dir es requerido"}), 400
+
+        output_dir = os.path.abspath(output_dir)
+        progreso_path = os.path.join(output_dir, "progreso.json")
+
+        if not os.path.exists(progreso_path):
+            # Aún no ha arrancado (o la carpeta no corresponde a ningún
+            # flujo corrido todavía) — no es un error, solo "sin datos aún".
+            return jsonify({
+                "status": "pendiente",
+                "current_step": None,
+                "visualizaciones": []
+            })
+
+        with open(progreso_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return jsonify(data)
+    except Exception as e:
+        print(f"[ERROR] Excepción en flujo_progreso: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 
 @app.route('/procesar_flujo_batch', methods=['POST'])
 def procesar_flujo_batch():
@@ -873,7 +1068,7 @@ def guardar_graph():
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@app.route('/files/<folder>/<filename>', methods=['GET'])
+@app.route('/files/<folder>/<path:filename>', methods=['GET'])
 def serve_file(folder, filename):
     """
     Sirve archivos estáticos desde las carpetas files/images o files/output
@@ -928,6 +1123,47 @@ def serve_file(folder, filename):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
+@app.route('/preview-image', methods=['GET'])
+def preview_image():
+    """
+    Sirve como PNG un archivo de preview (tif/png/jpg) a partir de su ruta
+    absoluta en el servidor. Se usa para mostrar los previews generados por
+    /procesar, /procesar_paso y /procesar_flujo directamente debajo del área
+    de procesamiento, sin depender de que el archivo esté dentro de
+    backend/files/ (los output_dir son elegidos libremente por el usuario).
+
+    Uso: GET /preview-image?path=/ruta/absoluta/al/archivo.tif
+    """
+    try:
+        path = request.args.get('path')
+        if not path:
+            return jsonify({"status": "error", "message": "path es requerido"}), 400
+
+        path = os.path.abspath(path)
+        if not os.path.exists(path) or not os.path.isfile(path):
+            return jsonify({"status": "error", "message": "Archivo de preview no encontrado"}), 404
+
+        if path.lower().endswith(('.tif', '.tiff')):
+            # Preferir el quicklook PNG pre-generado con pconvert si existe
+            precomputed_png = os.path.splitext(path)[0] + ".png"
+            if os.path.exists(precomputed_png):
+                return send_file(precomputed_png, mimetype='image/png', as_attachment=False)
+            try:
+                buf = _convert_file_to_png(path)
+                buf.seek(0)
+                return send_file(buf, mimetype='image/png', as_attachment=False)
+            except ConversionError as ce:
+                return jsonify(ce.to_dict()), 422
+
+        mimetype = mimetypes.guess_type(path)[0] or 'application/octet-stream'
+        return send_file(path, mimetype=mimetype)
+    except Exception as e:
+        print(f"[ERROR] Excepción en preview_image: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/files/temp/converted/<filename>', methods=['GET'])
 def serve_temp_converted(filename):
     try:
@@ -940,7 +1176,7 @@ def serve_temp_converted(filename):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@app.route('/download/<folder>/<filename>', methods=['GET'])
+@app.route('/download/<folder>/<path:filename>', methods=['GET'])
 def download_original(folder, filename):
     """Descarga el archivo original (sin conversión). Útil para obtener el TIFF completo."""
     try:
@@ -1111,7 +1347,295 @@ def geo_info(filename):
         return jsonify({"status": "error", "message": str(e)}), 500
 
 
-@app.route('/convert-image/<folder>/<filename>', methods=['GET'])
+@app.route('/geo-info-path', methods=['GET'])
+def geo_info_path():
+    """
+    Obtiene bounds en EPSG:4326 para un GeoTIFF de preview.
+    Estrategia (en orden):
+      1) CRS + transform afín del raster
+      2) GCPs embebidos en el GeoTIFF (típico en productos SNAP)
+      3) Metadatos del .dim hermano (ULXMAP/ULYMAP/...) si existe
+    """
+    path = request.args.get('path')
+    if not path:
+        return jsonify({"status": "error", "message": "path es requerido"}), 400
+
+    path = os.path.abspath(path)
+    if not os.path.exists(path) or not os.path.isfile(path):
+        return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
+
+    if not path.lower().endswith(('.tif', '.tiff')):
+        return jsonify({
+            "status": "error",
+            "message": "Solo se soportan GeoTIFF (.tif/.tiff) por ahora",
+        }), 400
+
+    try:
+        import rasterio
+        from rasterio.warp import transform_bounds
+        from rasterio.transform import from_gcps
+    except ImportError:
+        return jsonify({
+            "status": "error",
+            "message": "rasterio no está instalado en el backend",
+        }), 500
+
+    def _ok(west, south, east, north, source, crs_original=None, width=None, height=None):
+        return jsonify({
+            "status": "ok",
+            "filename": os.path.basename(path),
+            "has_georeference": True,
+            "bounds": {
+                "west": float(west),
+                "east": float(east),
+                "north": float(north),
+                "south": float(south),
+            },
+            "source": source,
+            "crs_original": crs_original,
+            "width": width,
+            "height": height,
+        })
+
+    def _bounds_from_dim(dim_path):
+        """Lee ULXMAP/ULYMAP/LRXMAP/LRYMAP (o variantes) del .dim BEAM-DIMAP."""
+        try:
+            text = Path(dim_path).read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            return None
+
+        def _find(names):
+            for name in names:
+                m = re.search(
+                    rf"<(?:[^:>]+:)?{name}>\s*([-+eE0-9.]+)\s*</(?:[^:>]+:)?{name}>",
+                    text,
+                    re.IGNORECASE,
+                )
+                if m:
+                    try:
+                        return float(m.group(1))
+                    except ValueError:
+                        pass
+            return None
+
+        ulx = _find(["ULXMAP", "UL_X", "WEST_BOUNDING_COORDINATE"])
+        uly = _find(["ULYMAP", "UL_Y", "NORTH_BOUNDING_COORDINATE"])
+        lrx = _find(["LRXMAP", "LR_X", "EAST_BOUNDING_COORDINATE"])
+        lry = _find(["LRYMAP", "LR_Y", "SOUTH_BOUNDING_COORDINATE"])
+
+        if None in (ulx, uly, lrx, lry):
+            # Fallback: first/last lat/lon tie-point si existen
+            lats = [float(x) for x in re.findall(
+                r"<(?:[^:>]+:)?LATITUDE>\s*([-+eE0-9.]+)\s*</", text)]
+            lons = [float(x) for x in re.findall(
+                r"<(?:[^:>]+:)?LONGITUDE>\s*([-+eE0-9.]+)\s*</", text)]
+            if len(lats) >= 2 and len(lons) >= 2:
+                return min(lons), min(lats), max(lons), max(lats)
+            return None
+
+        west, east = min(ulx, lrx), max(ulx, lrx)
+        south, north = min(uly, lry), max(uly, lry)
+        # Si parecen grados WGS84
+        if -180 <= west <= 180 and -90 <= south <= 90:
+            return west, south, east, north
+        return None
+
+    try:
+        with rasterio.open(path) as ds:
+            width, height = ds.width, ds.height
+
+            # 1) CRS afín real
+            if ds.crs and ds.transform and not ds.transform.is_identity:
+                try:
+                    west, south, east, north = transform_bounds(
+                        ds.crs, "EPSG:4326",
+                        ds.bounds.left, ds.bounds.bottom,
+                        ds.bounds.right, ds.bounds.top,
+                    )
+                    if all(abs(v) < 1e10 for v in (west, south, east, north)):
+                        return _ok(west, south, east, north, "affine_crs",
+                                   str(ds.crs), width, height)
+                except Exception as e:
+                    print(f"[WARN] geo_info_path affine falló: {e}")
+
+            # 2) GCPs (muy frecuente en exports de SNAP)
+            try:
+                gcps, gcp_crs = ds.gcps
+                if gcps and len(gcps) >= 3:
+                    xs = [g.x for g in gcps]
+                    ys = [g.y for g in gcps]
+                    if gcp_crs:
+                        west, south, east, north = transform_bounds(
+                            gcp_crs, "EPSG:4326",
+                            min(xs), min(ys), max(xs), max(ys),
+                        )
+                    else:
+                        # Asumir ya lat/lon
+                        west, south, east, north = min(xs), min(ys), max(xs), max(ys)
+                    if all(abs(v) < 1e10 for v in (west, south, east, north)):
+                        return _ok(west, south, east, north, "gcps",
+                                   str(gcp_crs) if gcp_crs else None,
+                                   width, height)
+            except Exception as e:
+                print(f"[WARN] geo_info_path GCPs falló: {e}")
+
+        # 3) .dim hermano: mismo basename en la carpeta padre o en previews/
+        candidates = []
+        base = os.path.splitext(os.path.basename(path))[0]
+        # quitar sufijos típicos de preview
+        for suffix in ("_preview", "_Intensity", "_Phase", "_UnwPhase",
+                       "_Displacement", "_Masked"):
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        parent = os.path.dirname(path)
+        grandparents = [parent, os.path.dirname(parent),
+                        os.path.join(os.path.dirname(parent), "..")]
+        for folder in grandparents:
+            folder = os.path.abspath(folder)
+            for name in (f"{base}.dim",
+                         os.path.basename(path).replace(".tif", ".dim")):
+                cand = os.path.join(folder, name)
+                if os.path.exists(cand):
+                    candidates.append(cand)
+            # cualquier .dim en la carpeta del producto
+            for dim in glob.glob(os.path.join(folder, "*.dim")):
+                candidates.append(dim)
+
+        seen = set()
+        for dim_path in candidates:
+            if dim_path in seen:
+                continue
+            seen.add(dim_path)
+            b = _bounds_from_dim(dim_path)
+            if b:
+                west, south, east, north = b
+                return _ok(west, south, east, north, f"dim:{os.path.basename(dim_path)}",
+                           "EPSG:4326", None, None)
+
+        return jsonify({
+            "status": "ok",
+            "filename": os.path.basename(path),
+            "has_georeference": False,
+            "message": (
+                "Sin CRS/GCPs en el GeoTIFF ni bounds en .dim asociado. "
+                "Típico en geometría radar (pasos previos a Terrain Correction)."
+            ),
+        })
+
+    except rasterio.errors.RasterioIOError as e:
+        return jsonify({
+            "status": "error",
+            "message": f"No se pudo abrir el raster: {e}",
+        }), 422
+    except Exception as e:
+        print(f"[ERROR] geo_info_path: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+@app.route('/pixel-value', methods=['GET'])
+def pixel_value():
+    """
+    Devuelve el valor REAL del píxel en lat/lng.
+    Soporta:
+      1) CRS + transform afín
+      2) GCPs (productos SNAP georreferenciados solo con puntos de control)
+    """
+    path = request.args.get('path')
+    lat = request.args.get('lat')
+    lng = request.args.get('lng')
+
+    if not path or lat is None or lng is None:
+        return jsonify({"status": "error", "message": "path, lat y lng son requeridos"}), 400
+
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except ValueError:
+        return jsonify({"status": "error", "message": "lat/lng inválidos"}), 400
+
+    path = os.path.abspath(path)
+    if not os.path.exists(path) or not os.path.isfile(path):
+        return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
+
+    if not path.lower().endswith(('.tif', '.tiff')):
+        return jsonify({"status": "error", "message": "Solo se soportan GeoTIFF (.tif/.tiff) por ahora"}), 400
+
+    try:
+        import rasterio
+        from rasterio.warp import transform as warp_transform
+        from rasterio.transform import from_gcps, rowcol
+    except ImportError:
+        return jsonify({"status": "error", "message": "rasterio no está instalado en el backend"}), 500
+
+    def _read_pixel(ds, row, col, method="affine"):
+        if row < 0 or col < 0 or row >= ds.height or col >= ds.width:
+            return jsonify({
+                "status": "ok",
+                "in_bounds": False,
+                "message": "Coordenada fuera del área del producto.",
+                "method": method,
+            })
+        banda = ds.read(1, window=((row, row + 1), (col, col + 1)), masked=True)
+        valor = banda[0, 0]
+        es_nodata = bool(np.ma.is_masked(valor))
+        return jsonify({
+            "status": "ok",
+            "in_bounds": True,
+            "row": int(row),
+            "col": int(col),
+            "value": None if es_nodata else float(valor),
+            "is_nodata": es_nodata,
+            "band_count": ds.count,
+            "method": method,
+        })
+
+    try:
+        with rasterio.open(path) as ds:
+            # 1) Transform afín real
+            if ds.crs and ds.transform and not ds.transform.is_identity:
+                try:
+                    xs, ys = warp_transform("EPSG:4326", ds.crs, [lng], [lat])
+                    row, col = ds.index(xs[0], ys[0])
+                    return _read_pixel(ds, row, col, method="affine")
+                except Exception as e:
+                    print(f"[WARN] pixel_value affine falló: {e}")
+
+            # 2) GCPs → transform aproximado (típico SNAP post-TC / subset)
+            try:
+                gcps, gcp_crs = ds.gcps
+                if gcps and len(gcps) >= 3:
+                    transform = from_gcps(gcps)
+                    if gcp_crs:
+                        xs, ys = warp_transform("EPSG:4326", gcp_crs, [lng], [lat])
+                        x, y = xs[0], ys[0]
+                    else:
+                        # GCPs ya en lon/lat
+                        x, y = lng, lat
+                    rows, cols = rowcol(transform, [x], [y])
+                    row, col = int(rows[0]), int(cols[0])
+                    return _read_pixel(ds, row, col, method="gcps")
+            except Exception as e:
+                print(f"[WARN] pixel_value GCPs falló: {e}")
+
+            return jsonify({
+                "status": "error",
+                "message": (
+                    "Este producto no tiene transformación afín ni GCPs utilizables; "
+                    "no se puede mapear lat/lng a un píxel de forma fiable."
+                ),
+            }), 422
+
+    except rasterio.errors.RasterioIOError as e:
+        return jsonify({"status": "error", "message": f"No se pudo abrir el raster: {e}"}), 422
+    except Exception as e:
+        print(f"[ERROR] pixel_value: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": f"Error leyendo valor de píxel: {e}"}), 500
+
+@app.route('/convert-image/<folder>/<path:filename>', methods=['GET'])
 def convert_image(folder, filename):
     """
     Convierte archivos de imagen a formato PNG para visualización en navegador
@@ -1131,7 +1655,19 @@ def convert_image(folder, filename):
         
         if not os.path.exists(file_path):
             return jsonify({"error": "Archivo no encontrado"}), 404
-        
+
+        # Si es un TIFF y ya existe un quicklook PNG pre-generado con
+        # pconvert (creado en el momento de exportar el .tif, con el
+        # mismo motor de render que SNAP Desktop), lo servimos directo
+        # desde disco -- es más rápido y más confiable que reconstruir
+        # la banda desde el .tif crudo aquí adivinando parámetros.
+        if file_path.lower().endswith(('.tif', '.tiff')):
+            precomputed_png = os.path.splitext(file_path)[0] + ".png"
+            if os.path.exists(precomputed_png):
+                print(f"[DEBUG] Sirviendo quicklook pre-generado: {precomputed_png}")
+                return send_file(precomputed_png, mimetype='image/png', as_attachment=False,
+                                 download_name=f"{os.path.splitext(filename)[0]}.png")
+
         try:
             buf = _convert_file_to_png(file_path)
             buf.seek(0)
@@ -1182,6 +1718,33 @@ def _convert_file_to_png(file_path, max_size=2048):
             if img.mode in ['RGBA', 'P', 'L', 'LA']:
                 print(f"[DEBUG] Convirtiendo de {img.mode} a RGB")
                 img = img.convert('RGB')
+            elif img.mode in ['F', 'I', 'I;16', 'I;16B']:
+                # Modos numéricos (float32/int32, típicos de bandas SAR/satelitales).
+                # img.convert('RGB') NO normaliza: trunca/clampa los valores a 0-255,
+                # lo que produce imágenes en blanco o negras si los datos no están
+                # ya en rango 0-255. Hay que normalizar manualmente antes.
+                #
+                # OJO: usar min()/max() absolutos es peligroso en SAR porque suele
+                # haber píxeles basura/nodata con valores extremos (overflow, bordes
+                # sin datos) que dominan el rango y aplastan toda la señal real.
+                # Por eso usamos un stretch por percentiles (2%-98%), como hace SNAP.
+                print(f"[DEBUG] Modo {img.mode} detectado, normalizando valores antes de convertir a RGB")
+                import numpy as np
+                arr = np.array(img, dtype='float64')
+                arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+                # Descartar outliers extremos antes de calcular percentiles
+                finite_mask = np.isfinite(arr)
+                p2, p98 = np.percentile(arr[finite_mask], [2, 98])
+                print(f"[DEBUG] Rango completo: min={arr.min()}, max={arr.max()} | Percentiles 2-98%: {p2}, {p98}")
+
+                if p98 - p2 < 1e-8:
+                    arr8 = np.zeros_like(arr, dtype='uint8')
+                else:
+                    clipped = np.clip(arr, p2, p98)
+                    arr8 = ((clipped - p2) / (p98 - p2) * 255).astype('uint8')
+
+                img = Image.fromarray(arr8).convert('RGB')
             elif img.mode not in ['RGB', 'RGBA']:
                 print(f"[DEBUG] Convirtiendo modo {img.mode} a RGB")
                 img = img.convert('RGB')
@@ -1296,6 +1859,105 @@ def _convert_file_to_png(file_path, max_size=2048):
             file_size_mb=file_size_mb,
             suggestion="Verifica que sea un archivo TIFF válido. Si persiste, instala rasterio."
         )
+
+@app.route('/productos-visualizables', methods=['GET'])
+def productos_visualizables():
+    """
+    Lista GeoTIFF de preview ya generados bajo una carpeta de salida,
+    para poder cargarlos en el mapa/comparador sin reprocesar.
+
+    Query:
+      base_dir  (opcional)  ruta absoluta de salida del usuario
+                            Si no se envía, usa backend/files/output
+
+    Cada ítem tiene el mismo shape que las visualizaciones del flujo:
+      { status, step, band_name, output_tiff, quicklook_png, message }
+    """
+    try:
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        default_out = os.path.join(backend_dir, "files", "output")
+        base_dir = request.args.get("base_dir") or default_out
+        base_dir = os.path.abspath(base_dir)
+
+        if not os.path.isdir(base_dir):
+            return jsonify({
+                "status": "error",
+                "message": f"Carpeta no encontrada: {base_dir}",
+            }), 404
+
+        # Carpetas / nombres típicos de previews del pipeline
+        tiff_candidates = []
+        for root, dirs, files in os.walk(base_dir):
+            # no entrar a *.data de SNAP
+            dirs[:] = [d for d in dirs if not d.lower().endswith(".data")]
+            rel_root = os.path.relpath(root, base_dir)
+            for f in files:
+                low = f.lower()
+                if not low.endswith((".tif", ".tiff")):
+                    continue
+                # filtrar tiffs "de trabajo" poco útiles si hace falta;
+                # incluimos previews y exports del flujo
+                full = os.path.join(root, f)
+                tiff_candidates.append(full)
+
+        productos = []
+        seen = set()
+        for tiff_path in sorted(tiff_candidates, key=os.path.getmtime, reverse=True):
+            if tiff_path in seen:
+                continue
+            seen.add(tiff_path)
+
+            base_name = os.path.splitext(os.path.basename(tiff_path))[0]
+            parent = os.path.dirname(tiff_path)
+
+            # PNG quicklook hermano (mismo basename)
+            png_path = os.path.join(parent, base_name + ".png")
+            if not os.path.exists(png_path):
+                # a veces pconvert usa el nombre del .dim original
+                alt = glob.glob(os.path.join(parent, "*.png"))
+                png_path = alt[0] if len(alt) == 1 else None
+            if png_path and not os.path.exists(png_path):
+                png_path = None
+
+            # Etiqueta legible: carpeta relativa + nombre
+            try:
+                rel = os.path.relpath(tiff_path, base_dir)
+            except ValueError:
+                rel = tiff_path
+            step_label = rel.replace("\\", "/")
+
+            # band_name heurístico desde el nombre del archivo
+            band_name = base_name
+            for prefix in ("paso1_master_", "paso1_slave_", "paso2a_", "paso2b_",
+                           "paso3_", "paso4_", "paso5_", "paso6_", "paso7_",
+                           "preview_", "_preview"):
+                if band_name.lower().startswith(prefix.lower()):
+                    band_name = band_name[len(prefix):]
+                    break
+            if band_name.endswith("_preview"):
+                band_name = band_name[: -len("_preview")]
+
+            productos.append({
+                "status": "ok",
+                "step": step_label,
+                "band_name": band_name,
+                "output_tiff": tiff_path,
+                "quicklook_png": png_path,
+                "message": "Cargado desde disco",
+                "mtime": os.path.getmtime(tiff_path),
+            })
+
+        return jsonify({
+            "status": "ok",
+            "base_dir": base_dir,
+            "count": len(productos),
+            "productos": productos,
+        })
+    except Exception as e:
+        print(f"[ERROR] productos_visualizables: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.route('/convert-image/upload', methods=['POST'])
@@ -1426,6 +2088,22 @@ def procesar_paso():
                             print(f"[DEBUG] Archivo encontrado en: {subset_dim}")
                             break
                     if not found:
+                        # Fallback: igual que en /procesar, cada gráfico guarda su
+                        # salida en su propia subcarpeta (ej. "Grafo 4 - Final
+                        # Output/archivo.dim"), y las possible_paths de arriba no
+                        # bajan a esas subcarpetas. Se busca recursivamente por
+                        # nombre de archivo dentro de files/output/ antes de
+                        # rendirse al fallback ciego de siempre.
+                        basename = os.path.basename(subset_dim)
+                        candidatos = glob.glob(
+                            os.path.join(backend_dir, "files", "output", "**", basename),
+                            recursive=True,
+                        )
+                        if candidatos:
+                            subset_dim = max(candidatos, key=os.path.getmtime)
+                            found = True
+                            print(f"[DEBUG] '{input_from_user}' encontrado por búsqueda recursiva en: {subset_dim}")
+                    if not found:
                         subset_dim = os.path.abspath(possible_paths[0])
                         print(f"[DEBUG] Archivo no encontrado, usando fallback: {subset_dim}")
             else:
@@ -1546,10 +2224,36 @@ def procesar_paso():
         stderr_text = "\n".join(collected_stderr)
 
         if process.returncode == 0:
+            # Detectar el .dim de salida de este paso (misma lógica que usa
+            # el flujo completo para encadenar pasos) y generar su preview.
+            preview = None
+            try:
+                dim_a_previsualizar = None
+                if step == "SNAPHU_FULL":
+                    dim_files = list((base_path / "SnaphuImport").glob("*.dim"))
+                    if dim_files:
+                        dim_a_previsualizar = str(dim_files[0])
+                elif step == "PHASE_TO_DISPLACEMENT":
+                    dim_files = list((base_path / "PhaseToDisplacement").glob("*.dim"))
+                    if dim_files:
+                        dim_a_previsualizar = str(dim_files[0])
+                elif step == "TERRAIN_CORRECTION":
+                    tc_dir = base_path / "TerrainCorrection"
+                    tc_files = list(tc_dir.glob("Stack_TC_Masked.dim")) or list(tc_dir.glob("*.dim"))
+                    if tc_files:
+                        dim_a_previsualizar = str(tc_files[0])
+
+                if dim_a_previsualizar:
+                    band_pattern = BAND_PATTERNS_BY_STEP.get(step, ".*")
+                    preview = _generar_preview_individual(dim_a_previsualizar, band_pattern, step)
+            except Exception as preview_err:
+                print(f"[WARN] No se pudo generar preview para paso {step}: {preview_err}")
+
             return jsonify({
                 "status": "ok",
                 "message": f"Paso {step} completado exitosamente",
-                "output": stdout_text[-3000:] if len(stdout_text) > 3000 else stdout_text
+                "output": stdout_text[-3000:] if len(stdout_text) > 3000 else stdout_text,
+                "preview": preview
             })
         else:
             return jsonify({
@@ -1564,6 +2268,267 @@ def procesar_paso():
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
 
-    
+#Modulo para visualizacion y conversion de imagenes a formato .tif
+
+def _parse_dim_bands(dim_text):
+    """
+    Parsea un .dim (BEAM-DIMAP) y devuelve la lista de bandas con su info
+    relevante para decidir cómo exportarlas:
+        [{"name": str, "virtual": bool, "expression": str|None}, ...]
+
+    Las bandas virtuales (ej. Intensity_* calculada desde i_*/q_* en datos
+    SLC complejos) no tienen píxeles propios en disco -- solo una fórmula
+    en el .dim -- así que hay que recalcularlas con BandMaths en vez de
+    simplemente seleccionarlas con BandSelect.
+    """
+    bands = []
+    for block in re.findall(r"<Spectral_Band_Info>(.*?)</Spectral_Band_Info>", dim_text, re.DOTALL):
+        name_m = re.search(r"<BAND_NAME>([^<]+)</BAND_NAME>", block)
+        if not name_m:
+            continue
+        virtual_m = re.search(r"<VIRTUAL_BAND>\s*true\s*</VIRTUAL_BAND>", block, re.IGNORECASE)
+        expr_m = re.search(r"<EXPRESSION>(.*?)</EXPRESSION>", block, re.DOTALL)
+        bands.append({
+            "name": name_m.group(1),
+            "virtual": bool(virtual_m),
+            "expression": expr_m.group(1).strip() if expr_m else None,
+        })
+    return bands
+
+
+def _xml_escape(s):
+    """Escape mínimo para insertar un valor dentro de un tag XML."""
+    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _generar_quicklook_pconvert(dim_path, band_name, output_tiff_path, pconvert_bin=None, max_res=2048):
+    """
+    Genera un PNG "quicklook" usando la herramienta pconvert de SNAP,
+    apuntando directamente al .dim de origen y la banda por nombre.
+
+    Esto replica el mismo motor de render/stretch que usa SNAP Desktop al
+    visualizar una banda, evitando el problema de exportar el TIFF crudo
+    (valores float32 sin normalizar, con posibles outliers extremos en
+    píxeles sin datos válidos, que rompen una normalización min-max simple).
+
+    Nunca lanza excepción: si falla, solo loguea un warning y devuelve
+    None, para no interrumpir el flujo principal de exportación del .tif.
+
+    Returns:
+        str|None: ruta al PNG generado, o None si falló.
+    """
+    pconvert_bin = pconvert_bin or os.environ.get("PCONVERT_BIN", "/home/nahin/esa-snap/bin/pconvert")
+    try:
+        output_dir = os.path.dirname(output_tiff_path)
+        os.makedirs(output_dir, exist_ok=True)
+
+        cmd = [
+            pconvert_bin,
+            "-f", "png",
+            "-B", band_name,
+            "-r", f"{max_res},{max_res}",
+            "-o", output_dir,
+            dim_path,
+        ]
+        print(f"[DEBUG] Generando quicklook con pconvert: {cmd}")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+
+        if proc.returncode != 0:
+            print(f"[WARN] pconvert falló generando quicklook para '{band_name}': {proc.stderr[-800:]}")
+            return None
+
+        # pconvert nombra el PNG según el basename del .dim de entrada,
+        # no según el nombre del .tif -- hay que localizarlo así.
+        dim_basename = os.path.splitext(os.path.basename(dim_path))[0]
+        generated_png = os.path.join(output_dir, f"{dim_basename}.png")
+
+        if not os.path.exists(generated_png):
+            print(f"[WARN] pconvert reportó éxito pero no se encontró el PNG esperado: {generated_png}")
+            return None
+
+        # Renombrar/mover para que coincida con el basename del .tif, así
+        # el endpoint /convert-image lo encuentra por convención de nombre
+        # sin tener que adivinar la banda.
+        target_png = os.path.splitext(output_tiff_path)[0] + ".png"
+        if os.path.abspath(generated_png) != os.path.abspath(target_png):
+            os.replace(generated_png, target_png)
+
+        print(f"[OK] Quicklook generado -> {target_png}")
+        return target_png
+
+    except subprocess.TimeoutExpired:
+        print(f"[WARN] pconvert excedió el tiempo límite generando quicklook para '{band_name}'")
+        return None
+    except Exception as e:
+        print(f"[WARN] Error inesperado generando quicklook con pconvert: {e}")
+        return None
+
+
+def exportar_banda_a_geotiff(dim_path, band_pattern, output_tiff_path, gpt_bin=None, label="banda"):
+    """
+    Exporta UNA banda de un producto .dim (BEAM-DIMAP) a GeoTIFF.
+
+    Si la banda es virtual (ej. Intensity_* calculada desde i_*/q_* en
+    datos SLC complejos, que existe solo como fórmula en el .dim y no
+    tiene .img propio), usa un nodo BandMaths con esa misma expresión
+    para recalcular los píxeles reales. Si es una banda real (con .img
+    en disco), usa BandSelect como antes -- más simple y más rápido.
+
+    Nunca lanza excepción: siempre devuelve un dict, para poder llamarla
+    después de cada paso del flujo sin arriesgar detenerlo si falla.
+
+    Returns:
+        dict: {"status": "ok"|"error", "message": str,
+               "output_tiff": str|None, "band_name": str|None}
+    """
+    result = {"status": "error", "message": None, "output_tiff": None, "band_name": None}
+    gpt_bin = gpt_bin or os.environ.get("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
+
+    try:
+        dim_path = str(dim_path)
+        if not os.path.exists(dim_path):
+            result["message"] = f"[{label}] .dim no encontrado: {dim_path}"
+            print(f"[WARN] {result['message']}")
+            return result
+
+        try:
+            dim_text = Path(dim_path).read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            result["message"] = f"[{label}] no se pudo leer el .dim: {e}"
+            print(f"[WARN] {result['message']}")
+            return result
+
+        bands_info = _parse_dim_bands(dim_text)
+        patterns = band_pattern if isinstance(band_pattern, (list, tuple)) else [band_pattern]
+
+        banda_info = None
+        for pat in patterns:
+            for b in bands_info:
+                if re.search(pat, b["name"], re.IGNORECASE):
+                    banda_info = b
+                    break
+            if banda_info:
+                break
+
+        if banda_info is None:
+            result["message"] = (
+                f"[{label}] ninguna banda coincide con {patterns} en {dim_path}. "
+                f"Bandas disponibles: {[b['name'] for b in bands_info]}"
+            )
+            print(f"[WARN] {result['message']}")
+            return result
+
+        banda = banda_info["name"]
+        es_virtual = banda_info["virtual"] and banda_info["expression"]
+
+        output_tiff_path = str(output_tiff_path)
+        if not output_tiff_path.lower().endswith((".tif", ".tiff")):
+            output_tiff_path += ".tif"
+        os.makedirs(os.path.dirname(output_tiff_path), exist_ok=True)
+
+        if es_virtual:
+            expr_escaped = _xml_escape(banda_info["expression"])
+            print(f"[DEBUG] [{label}] banda '{banda}' es VIRTUAL, recalculando con BandMaths: {banda_info['expression']}")
+            calc_node = f"""  <node id="BandMaths">
+    <operator>BandMaths</operator>
+    <sources>
+      <sourceProduct refid="Read"/>
+    </sources>
+    <parameters>
+      <targetBands>
+        <targetBand>
+          <name>{banda}</name>
+          <type>float32</type>
+          <expression>{expr_escaped}</expression>
+          <noDataValue>0.0</noDataValue>
+        </targetBand>
+      </targetBands>
+    </parameters>
+  </node>"""
+            write_source_refid = "BandMaths"
+        else:
+            print(f"[DEBUG] [{label}] banda '{banda}' es real, usando BandSelect")
+            calc_node = f"""  <node id="BandSelect">
+    <operator>BandSelect</operator>
+    <sources>
+      <sourceProduct refid="Read"/>
+    </sources>
+    <parameters>
+      <sourceBands>{banda}</sourceBands>
+    </parameters>
+  </node>"""
+            write_source_refid = "BandSelect"
+
+        xml_content = f"""<graph id="Graph">
+  <version>1.0</version>
+  <node id="Read">
+    <operator>Read</operator>
+    <parameters>
+      <file>{dim_path}</file>
+    </parameters>
+  </node>
+{calc_node}
+  <node id="Write">
+    <operator>Write</operator>
+    <sources>
+      <sourceProduct refid="{write_source_refid}"/>
+    </sources>
+    <parameters>
+      <file>{output_tiff_path}</file>
+      <formatName>GeoTIFF</formatName>
+    </parameters>
+  </node>
+</graph>
+"""
+        graph_path = os.path.join(
+            os.path.dirname(output_tiff_path),
+            f"_export_{os.path.splitext(os.path.basename(output_tiff_path))[0]}.xml",
+        )
+        with open(graph_path, "w", encoding="utf-8") as f:
+            f.write(xml_content)
+
+        print(f"[INFO] [{label}] exportando banda '{banda}' -> {output_tiff_path}")
+        proc = subprocess.run([gpt_bin, graph_path], capture_output=True, text=True)
+
+        if proc.returncode != 0:
+            result["message"] = f"[{label}] gpt falló exportando '{banda}': {proc.stderr[-1500:]}"
+            print(f"[WARN] {result['message']}")
+            return result
+
+        if not os.path.exists(output_tiff_path):
+            result["message"] = f"[{label}] gpt retornó éxito pero no se generó el TIFF: {output_tiff_path}"
+            print(f"[WARN] {result['message']}")
+            return result
+
+        try:
+            os.remove(graph_path)
+        except OSError:
+            pass
+
+        result.update(status="ok", message=f"[{label}] banda '{banda}' exportada.",
+                       output_tiff=output_tiff_path, band_name=banda)
+        print(f"[OK] {result['message']} -> {output_tiff_path}")
+
+        # Generar también el quicklook PNG con pconvert (mismo motor de
+        # render que SNAP Desktop) en el mismo momento, ya que aquí
+        # tenemos a mano el .dim y el nombre exacto de la banda. Esto es
+        # más confiable que reconstruir la banda a partir del nombre del
+        # archivo .tif en un endpoint genérico más adelante.
+        result["quicklook_png"] = _generar_quicklook_pconvert(dim_path, banda, output_tiff_path)
+
+        return result
+
+    except Exception as e:
+        result["message"] = f"[{label}] excepción inesperada: {e}"
+        print(f"[ERROR] {result['message']}")
+        import traceback
+        traceback.print_exc()
+        return result
+
 if __name__ == '__main__':
-    app.run(host='127.0.0.1', port=5000)
+    # threaded=True es IMPRESCINDIBLE: /procesar_flujo puede tardar minutos u
+    # horas dentro de una sola request. Sin threading, el servidor de
+    # desarrollo de Flask atiende una request a la vez, y el polling de
+    # /flujo-progreso quedaría bloqueado hasta que /procesar_flujo termine
+    # -- justo lo que queremos evitar para mostrar previews en tiempo real.
+    app.run(host='127.0.0.1', port=5000, threaded=True)

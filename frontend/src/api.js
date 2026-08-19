@@ -71,6 +71,15 @@ export async function procesarFlujoBatch(mainFolder, params = {}) {
   return response.json();
 }
 
+// ==================== NUEVA: polling de progreso del flujo completo ====================
+export async function obtenerProgresoFlujo(outputDir) {
+  const response = await fetch(
+    `${API_BASE}/flujo-progreso?output_dir=${encodeURIComponent(outputDir)}`,
+  );
+  if (!response.ok) throw new Error("Error al obtener progreso del flujo");
+  return response.json();
+}
+
 export async function guardarGraphXML(fileName, content) {
   const response = await fetch(`${API_BASE}/guardar-graph`, {
     method: "POST",
