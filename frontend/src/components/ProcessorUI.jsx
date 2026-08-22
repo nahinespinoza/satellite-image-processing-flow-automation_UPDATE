@@ -33,6 +33,7 @@ const ProcessorUI = () => {
   const [flowCurrentStep, setFlowCurrentStep] = useState(null);
   const [batchPreviewFolders, setBatchPreviewFolders] = useState([]);
   const [todasLasVisualizaciones, setTodasLasVisualizaciones] = useState([]);
+  const [mapaOutputDir, setMapaOutputDir] = useState("");
 
   const agregarVisualizaciones = (nuevas, origen) => {
     setTodasLasVisualizaciones((prev) => [
@@ -89,6 +90,7 @@ const ProcessorUI = () => {
         const config = await obtenerConfig();
         if (config.status === "ok") {
           setOutputDir(config.default_output_dir);
+          setMapaOutputDir(config.default_output_dir);
           setStatus("✅ Configuración cargada correctamente");
           setStatusColor("#4caf50");
         } else {
@@ -571,14 +573,22 @@ const ProcessorUI = () => {
           visualizaciones: r.visualizaciones || [],
         })),
       );
+
+      // La salida real del batch queda dentro de main_folder (una
+      // subcarpeta AAAAMMDD_AAAAMMDD por par). Apuntamos el mapa ahí
+      // en vez de dejarlo en el output por defecto del backend.
+      if (result.main_folder) {
+        setMapaOutputDir(result.main_folder);
+      }
+
       if (result.status === "ok") {
         setBatchStatus(
-          `✅ Batch completado: ${result.exitosos}/${result.total_carpetas} carpetas exitosas`,
+          `✅ Batch completado: ${result.exitosos}/${result.total_pares} pares exitosos`,
         );
         setBatchStatusColor("#4caf50");
       } else if (result.status === "partial") {
         setBatchStatus(
-          `⚠️ Batch terminado con errores: ${result.exitosos} exitosas, ${result.fallidos} fallidas de ${result.total_carpetas}`,
+          `⚠️ Batch terminado con errores: ${result.exitosos} exitosas, ${result.fallidos} fallidas de ${result.total_pares}`,
         );
         setBatchStatusColor("#ff9800");
       } else {
@@ -1025,15 +1035,19 @@ const ProcessorUI = () => {
               >
                 <h2>Batch de Flujos Completos</h2>
                 <p className="flow-note">
-                  Procesa muchas parejas de una sola vez. Cada subcarpeta = un
-                  par (2 imágenes, Δt ≈ 12 días):
+                  Sube una carpeta con todas tus imágenes; los pares se arman
+                  automáticamente comparando fechas (Δt = 12 días):
                 </p>
                 <pre className="batch-tree">
                   {`Carpeta_main/
-  Carpeta_0/  -> Img1, Img2
-  Carpeta_1/  -> Img1, Img2
+  Img1.zip
+  Img2.zip
+  Img3.zip
   ...
-  Carpeta_n/  -> Img1, Img2`}
+  ImgN.zip
+
+→ genera automáticamente:
+  Carpeta_main/AAAAMMDD_AAAAMMDD/  (por cada par válido)`}
                 </pre>
 
                 <div className="form-group">
@@ -1088,7 +1102,7 @@ const ProcessorUI = () => {
                     <label>
                       Resultado ({batchResults.exitosos} ok /{" "}
                       {batchResults.fallidos} error de{" "}
-                      {batchResults.total_carpetas}):
+                      {batchResults.total_pares}):
                     </label>
                     <div className="file-items">
                       {batchResults.resultados.map((r, idx) => (
@@ -1129,7 +1143,7 @@ const ProcessorUI = () => {
             <MapaVisualizador
               items={todasLasVisualizaciones}
               title="Mapa geoespacial — comparar y cargar resultados"
-              outputDir={outputDir}
+              outputDir={mapaOutputDir}
               onAddItems={(nuevos) => agregarVisualizaciones(nuevos, "disco")}
             />
           )}

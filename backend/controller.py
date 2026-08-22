@@ -167,32 +167,69 @@ def _listar_archivos_recursivo(base_dir):
             archivos.append(rel_path.replace(os.sep, "/"))
     return archivos
 
+
 @app.route('/archivos-disponibles', methods=['GET'])
 def archivos_disponibles():
     """
-    Lista todos los archivos disponibles en las carpetas de imágenes y output
-    (incluyendo los que están dentro de las subcarpetas "Grafo N - Nombre")
+    Lista los archivos disponibles, agrupados por par de fechas (carpetas
+    AAAAMMDD_AAAAMMDD generadas por /procesar_flujo_batch_auto), para que
+    el frontend pueda mostrar un selector por fecha en lugar de una lista
+    plana de cientos de archivos.
     """
     try:
         backend_dir = os.path.dirname(os.path.abspath(__file__))
         images_dir = os.path.join(backend_dir, "files", "images")
         output_dir = os.path.join(backend_dir, "files", "output")
 
+        def agrupar_por_par(base_dir):
+            grupos = {}
+            sueltos = []
+            if not os.path.exists(base_dir):
+                return {"pares": [], "sueltos": []}
+
+            for nombre in sorted(os.listdir(base_dir)):
+                ruta = os.path.join(base_dir, nombre)
+                # ¿Es una carpeta de par "AAAAMMDD_AAAAMMDD"?
+                if os.path.isdir(ruta) and re.match(r'^\d{8}_\d{8}$', nombre):
+                    fecha1_str, fecha2_str = nombre.split('_')
+                    grupos[nombre] = {
+                        "folder": nombre,
+                        "fecha1": f"{fecha1_str[:4]}-{fecha1_str[4:6]}-{fecha1_str[6:]}",
+                        "fecha2": f"{fecha2_str[:4]}-{fecha2_str[4:6]}-{fecha2_str[6:]}",
+                        "archivos": _listar_archivos_recursivo(ruta)
+                    }
+                elif os.path.isfile(ruta):
+                    sueltos.append(nombre)
+                elif os.path.isdir(ruta):
+                    # Carpeta que no sigue el patrón de fecha (ej. flujo individual viejo)
+                    sueltos.extend([f"{nombre}/{f}" for f in _listar_archivos_recursivo(ruta)])
+
+            return {
+                "pares": sorted(grupos.values(), key=lambda g: g["fecha1"]),
+                "sueltos": sueltos
+            }
+
         files_by_category = {
-            "input": _listar_archivos_recursivo(images_dir),
-            "output": _listar_archivos_recursivo(output_dir)
+            "input": agrupar_por_par(images_dir),
+            "output": agrupar_por_par(output_dir)
         }
+
+        total = sum(len(p["archivos"]) for p in files_by_category["input"]["pares"]) + \
+                len(files_by_category["input"]["sueltos"]) + \
+                sum(len(p["archivos"]) for p in files_by_category["output"]["pares"]) + \
+                len(files_by_category["output"]["sueltos"])
 
         return jsonify({
             "status": "ok",
             "files_by_category": files_by_category,
-            "total_count": len(files_by_category["input"]) + len(files_by_category["output"])
+            "total_count": total
         })
     except Exception as e:
         print(f"[ERROR] Excepción en archivos_disponibles: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+
 
 @app.route('/procesar', methods=['POST'])
 def procesar():
@@ -330,7 +367,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
     Displacement -> Terrain Correction final.
 
     Reutilizable tanto por /procesar_flujo (una sola pareja de imágenes)
-    como por /procesar_flujo_batch (muchas parejas, una por subcarpeta).
+    como por /procesar_flujo_batch_auto (muchas parejas, armadas automáticamente por fecha).
 
     No usa jsonify ni request: recibe todo por parámetros y devuelve
     (dict_resultado, http_status) para que el llamador decida qué hacer
@@ -861,37 +898,105 @@ def flujo_progreso():
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
+# ==================== EMPAREJAMIENTO AUTOMÁTICO POR FECHA (12 días) ====================
+
+# Extrae la fecha de adquisición de un nombre de producto Sentinel-1, ej:
+# S1A_IW_SLC__1SDV_20260509T105323_20260509T105350_064439_081D91_CFA2
+# -> captura el primer bloque YYYYMMDDTHHMMSS y devuelve solo la fecha (date).
+_SENTINEL_DATE_RE = re.compile(r'(\d{8})T\d{6}')
 
 
-@app.route('/procesar_flujo_batch', methods=['POST'])
-def procesar_flujo_batch():
+def _extraer_fecha_sentinel(filename):
     """
-    Ejecuta el flujo COMPLETO (pasos 1-7) para MUCHAS parejas de imágenes
-    de una sola vez, a partir de una carpeta principal con esta estructura:
+    Devuelve un objeto date extraído del nombre del archivo, o None si el
+    nombre no tiene el patrón esperado (YYYYMMDDTHHMMSS).
+    """
+    basename = os.path.basename(filename)
+    match = _SENTINEL_DATE_RE.search(basename)
+    if not match:
+        return None
+    try:
+        return datetime.strptime(match.group(1), "%Y%m%d").date()
+    except ValueError:
+        return None
+
+
+def _formar_pares_por_fecha(imagenes, dias_esperados=12):
+    """
+    Recibe una lista de rutas de imágenes (ya ordenadas cronológicamente) y
+    arma pares consecutivos SOLO cuando la diferencia de fechas entre ellas
+    es exactamente `dias_esperados` días.
+
+    Lógica (ventana deslizante de paso 1, tal como la describiste):
+      - compara img[0] con img[1]; si difieren en 12 días -> es un par válido
+      - compara img[1] con img[2]; si no difieren en 12 días -> no hay par ahí
+      - compara img[2] con img[3]; si difieren en 12 días -> es un par válido
+      - ... y así sucesivamente hasta el final de la lista.
+
+    Devuelve:
+        pares: lista de tuplas (img_a, img_b) válidas
+        descartadas: lista de dicts informando qué comparaciones no cuadraron
+                     (útil para mostrarle al usuario por qué faltó un par)
+    """
+    pares = []
+    descartadas = []
+
+    for i in range(len(imagenes) - 1):
+        img_a, img_b = imagenes[i], imagenes[i + 1]
+        fecha_a = _extraer_fecha_sentinel(img_a)
+        fecha_b = _extraer_fecha_sentinel(img_b)
+
+        if fecha_a is None or fecha_b is None:
+            descartadas.append({
+                "img_a": os.path.basename(img_a),
+                "img_b": os.path.basename(img_b),
+                "motivo": "No se pudo extraer la fecha del nombre del archivo"
+            })
+            continue
+
+        diferencia_dias = abs((fecha_b - fecha_a).days)
+
+        if diferencia_dias == dias_esperados:
+            pares.append((img_a, img_b))
+        else:
+            descartadas.append({
+                "img_a": os.path.basename(img_a),
+                "img_b": os.path.basename(img_b),
+                "motivo": f"Diferencia de {diferencia_dias} días (se esperaban {dias_esperados})"
+            })
+
+    return pares, descartadas
+
+
+@app.route('/procesar_flujo_batch_auto', methods=['POST'])
+def procesar_flujo_batch_auto():
+    """
+    Ejecuta el flujo COMPLETO (pasos 1-7) para MUCHAS parejas de imágenes,
+    a partir de una carpeta principal PLANA (sin subcarpetas) con n imágenes:
 
     Carpeta_main/
-      Carpeta_0/  -> Img1, Img2
-      Carpeta_1/  -> Img1, Img2
-      ...
-      Carpeta_n/  -> Img1, Img2
+      Img1, Img2, Img3, ..., ImgN
 
-    Por cada subcarpeta se toman las 2 imágenes (.zip o .dim) que contiene
-    y se corre el flujo completo, generando TODA la salida (Grafo 1..4,
-    Snaphu, Phase to Displacement, Terrain Correction) DENTRO de esa misma
-    subcarpeta, al mismo nivel que las imágenes originales.
+    Los pares se arman automáticamente comparando la fecha de adquisición
+    codificada en el nombre del archivo Sentinel-1 (formato YYYYMMDDTHHMMSS):
+    solo se procesan como par las imágenes consecutivas (ordenadas por fecha)
+    cuya diferencia sea de exactamente 12 días.
 
-    Si una subcarpeta falla, se registra el error y se continúa con las
-    demás (no se detiene el batch completo).
+    Por cada par válido se crea una subcarpeta dentro de main_folder con el
+    nombre "<fecha1>_<fecha2>" y ahí se genera toda la salida del flujo
+    (igual que hace /procesar_flujo_batch para cada Carpeta_n).
 
     Espera un JSON:
     {
       "main_folder": "/ruta/a/Carpeta_main",
-      "params": { ... }   <-- OPCIONAL
+      "dias_esperados": 12,   <-- OPCIONAL, por defecto 12
+      "params": { ... }       <-- OPCIONAL
     }
     """
     try:
         data = request.json
         main_folder = data.get('main_folder')
+        dias_esperados = int(data.get('dias_esperados', 12))
         user_params = data.get('params', {})
 
         if not main_folder:
@@ -899,12 +1004,8 @@ def procesar_flujo_batch():
 
         backend_dir = os.path.dirname(os.path.abspath(__file__))
 
-        # Resolver la carpeta principal. Si viene como ruta absoluta (por ej.
-        # tecleada manualmente) se usa tal cual. Si viene como un nombre suelto
-        # (por ej. lo que entrega el selector de carpetas del navegador, que por
-        # seguridad NO expone la ruta absoluta del disco, solo el nombre de la
-        # carpeta) se busca dentro de las ubicaciones conocidas del backend,
-        # igual que ya se hace para archivos individuales en /procesar_flujo.
+        # Misma resolución de ruta que ya usa /procesar_flujo_batch, para
+        # soportar tanto ruta absoluta como nombre de carpeta suelto.
         if os.path.isabs(main_folder) and os.path.isdir(main_folder):
             resolved_folder = os.path.abspath(main_folder)
         else:
@@ -918,7 +1019,7 @@ def procesar_flujo_batch():
             for path in search_paths:
                 if os.path.isdir(path):
                     resolved_folder = os.path.abspath(path)
-                    print(f"[BATCH] Carpeta principal encontrada en: {resolved_folder}")
+                    print(f"[BATCH-AUTO] Carpeta principal encontrada en: {resolved_folder}")
                     break
 
         if resolved_folder is None:
@@ -926,70 +1027,70 @@ def procesar_flujo_batch():
                 "status": "error",
                 "message": (
                     f"No se encontró la carpeta principal: '{main_folder}'. "
-                    f"Si la seleccionaste con 'Browse', el navegador solo envía el nombre de "
-                    f"la carpeta (por seguridad no expone la ruta completa del disco); en ese "
-                    f"caso colócala dentro de backend/files/images/ o backend/files/output/, "
-                    f"o escribe la ruta absoluta completa manualmente en el campo de texto."
+                    f"Si la seleccionaste con 'Browse', colócala dentro de "
+                    f"backend/files/images/ o backend/files/output/, o escribe "
+                    f"la ruta absoluta completa manualmente."
                 )
             }), 404
 
         main_folder = resolved_folder
         ALLOWED_EXTS = ('.zip', '.dim')
 
-        # Subcarpetas de primer nivel (Carpeta_0, Carpeta_1, ..., Carpeta_n)
-        subfolders = sorted([
-            os.path.join(main_folder, d)
-            for d in os.listdir(main_folder)
-            if os.path.isdir(os.path.join(main_folder, d))
-        ])
+        # Todas las imágenes (nivel raíz de main_folder, sin bajar a subcarpetas)
+        imagenes = [
+            os.path.join(main_folder, f)
+            for f in os.listdir(main_folder)
+            if os.path.isfile(os.path.join(main_folder, f))
+            and f.lower().endswith(ALLOWED_EXTS)
+        ]
 
-        if not subfolders:
+        if len(imagenes) < 2:
             return jsonify({
                 "status": "error",
-                "message": f"No se encontraron subcarpetas dentro de: {main_folder}"
+                "message": f"Se requieren al menos 2 imágenes en '{main_folder}', se encontraron {len(imagenes)}."
             }), 404
 
-        print(f"[BATCH] {len(subfolders)} subcarpetas encontradas en {main_folder}")
+        # Ordenar cronológicamente según la fecha extraída del nombre. Las
+        # imágenes sin fecha reconocible se mandan al final (no rompen el orden).
+        imagenes.sort(key=lambda f: _extraer_fecha_sentinel(f) or datetime.max.date())
+
+        print(f"[BATCH-AUTO] {len(imagenes)} imágenes encontradas en {main_folder}, armando pares por fecha...")
+
+        pares, descartadas = _formar_pares_por_fecha(imagenes, dias_esperados=dias_esperados)
+
+        for d in descartadas:
+            print(f"[BATCH-AUTO][SKIP] {d['img_a']} <-> {d['img_b']}: {d['motivo']}")
+
+        if not pares:
+            return jsonify({
+                "status": "error",
+                "message": f"No se formó ningún par con diferencia de {dias_esperados} días.",
+                "descartadas": descartadas
+            }), 404
+
+        print(f"[BATCH-AUTO] {len(pares)} pares válidos de {len(imagenes)} imágenes.")
 
         resultados = []
         exitosos = 0
         fallidos = 0
 
-        for subfolder in subfolders:
-            folder_name = os.path.basename(subfolder)
-            print(f"\n{'=' * 60}\n[BATCH] Procesando carpeta: {folder_name}\n{'=' * 60}")
+        for imagen1, imagen2 in pares:
+            fecha1 = _extraer_fecha_sentinel(imagen1)
+            fecha2 = _extraer_fecha_sentinel(imagen2)
+            folder_name = f"{fecha1.strftime('%Y%m%d')}_{fecha2.strftime('%Y%m%d')}"
+            pair_output_dir = os.path.join(main_folder, folder_name)
+            os.makedirs(pair_output_dir, exist_ok=True)
 
-            # Buscar las 2 imágenes principales dentro de la subcarpeta (nivel raíz,
-            # sin bajar a las carpetas que el propio flujo irá creando dentro).
-            imagenes = sorted([
-                os.path.join(subfolder, f)
-                for f in os.listdir(subfolder)
-                if os.path.isfile(os.path.join(subfolder, f))
-                and f.lower().endswith(ALLOWED_EXTS)
-            ])
+            print(f"\n{'=' * 60}\n[BATCH-AUTO] Procesando par: {folder_name}\n{'=' * 60}")
+            print(f"[BATCH-AUTO] Imagen 1 (master): {imagen1}")
+            print(f"[BATCH-AUTO] Imagen 2 (slave):  {imagen2}")
 
-            if len(imagenes) < 2:
-                msg = (
-                    f"Se requieren 2 imágenes (.zip o .dim) en '{folder_name}' y se "
-                    f"encontraron {len(imagenes)}."
-                )
-                print(f"[BATCH][ERROR] {msg}")
-                resultados.append({"folder": folder_name, "status": "error", "message": msg})
-                fallidos += 1
-                continue
-
-            imagen1, imagen2 = imagenes[0], imagenes[1]
-            print(f"[BATCH] Imagen 1 (master): {imagen1}")
-            print(f"[BATCH] Imagen 2 (slave):  {imagen2}")
-
-            # La salida de esta carpeta se crea DENTRO de la misma subcarpeta,
-            # al nivel de las imágenes principales.
             try:
                 result, code = _ejecutar_flujo_completo_core(
-                    [imagen1, imagen2], subfolder, backend_dir, user_params
+                    [imagen1, imagen2], pair_output_dir, backend_dir, user_params
                 )
             except Exception as e:
-                print(f"[BATCH][ERROR] Excepción procesando '{folder_name}': {e}")
+                print(f"[BATCH-AUTO][ERROR] Excepción procesando '{folder_name}': {e}")
                 import traceback
                 traceback.print_exc()
                 result, code = {"status": "error", "message": str(e)}, 500
@@ -999,10 +1100,10 @@ def procesar_flujo_batch():
 
             if result.get("status") == "ok":
                 exitosos += 1
-                print(f"[BATCH] ✅ '{folder_name}' completada. Salida: {result.get('final_output')}")
+                print(f"[BATCH-AUTO] ✅ '{folder_name}' completada. Salida: {result.get('final_output')}")
             else:
                 fallidos += 1
-                print(f"[BATCH] ❌ '{folder_name}' falló: {result.get('message')}")
+                print(f"[BATCH-AUTO] ❌ '{folder_name}' falló: {result.get('message')}")
 
         if fallidos == 0:
             status_general = "ok"
@@ -1011,19 +1112,21 @@ def procesar_flujo_batch():
         else:
             status_general = "error"
 
-        print(f"\n[BATCH] Terminado. {exitosos} exitosas, {fallidos} fallidas de {len(subfolders)} totales.")
+        print(f"\n[BATCH-AUTO] Terminado. {exitosos} exitosas, {fallidos} fallidas de {len(pares)} pares.")
 
         return jsonify({
             "status": status_general,
             "main_folder": main_folder,
-            "total_carpetas": len(subfolders),
+            "total_imagenes": len(imagenes),
+            "total_pares": len(pares),
             "exitosos": exitosos,
             "fallidos": fallidos,
-            "resultados": resultados
+            "resultados": resultados,
+            "pares_descartados": descartadas
         })
 
     except Exception as e:
-        print(f"[ERROR] Excepción en procesar_flujo_batch: {str(e)}")
+        print(f"[ERROR] Excepción en procesar_flujo_batch_auto: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -1870,8 +1973,11 @@ def productos_visualizables():
       base_dir  (opcional)  ruta absoluta de salida del usuario
                             Si no se envía, usa backend/files/output
 
-    Cada ítem tiene el mismo shape que las visualizaciones del flujo:
-      { status, step, band_name, output_tiff, quicklook_png, message }
+    Cada ítem tiene el mismo shape que las visualizaciones del flujo, más
+    los campos "par"/"fecha1"/"fecha2" cuando el .tif vive dentro de una
+    carpeta de par "AAAAMMDD_AAAAMMDD" generada por /procesar_flujo_batch_auto:
+      { status, step, band_name, output_tiff, quicklook_png, message,
+        mtime, par, fecha1, fecha2 }
     """
     try:
         backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1900,9 +2006,13 @@ def productos_visualizables():
                 full = os.path.join(root, f)
                 tiff_candidates.append(full)
 
+        # Patrón de carpeta de par generada por /procesar_flujo_batch_auto,
+        # ej. "20260509_20260521/Grafo 1 - Orbit/paso1_master_preview.tif"
+        _PAR_RE = re.compile(r'^(\d{8})_(\d{8})')
+
         productos = []
         seen = set()
-        for tiff_path in sorted(tiff_candidates, key=os.path.getmtime, reverse=True):
+        for tiff_path in tiff_candidates:
             if tiff_path in seen:
                 continue
             seen.add(tiff_path)
@@ -1926,6 +2036,17 @@ def productos_visualizables():
                 rel = tiff_path
             step_label = rel.replace("\\", "/")
 
+            # Si el .tif vive dentro de una carpeta de par "AAAAMMDD_AAAAMMDD"
+            # (generada por /procesar_flujo_batch_auto), extraemos esa info
+            # para poder agrupar/ordenar/filtrar por par en el frontend.
+            par_match = _PAR_RE.match(step_label)
+            if par_match:
+                par = f"{par_match.group(1)}_{par_match.group(2)}"
+                fecha1 = f"{par_match.group(1)[:4]}-{par_match.group(1)[4:6]}-{par_match.group(1)[6:]}"
+                fecha2 = f"{par_match.group(2)[:4]}-{par_match.group(2)[4:6]}-{par_match.group(2)[6:]}"
+            else:
+                par, fecha1, fecha2 = None, None, None
+
             # band_name heurístico desde el nombre del archivo
             band_name = base_name
             for prefix in ("paso1_master_", "paso1_slave_", "paso2a_", "paso2b_",
@@ -1945,7 +2066,16 @@ def productos_visualizables():
                 "quicklook_png": png_path,
                 "message": "Cargado desde disco",
                 "mtime": os.path.getmtime(tiff_path),
+                "par": par,
+                "fecha1": fecha1,
+                "fecha2": fecha2,
             })
+
+        # Orden: primero por par (fecha1 ascendente; los que no tienen par
+        # identificado quedan al final) y dentro de cada par por el nombre
+        # del paso, para que la lista quede agrupable y predecible en vez
+        # de mezclada por fecha de modificación (mtime) global.
+        productos.sort(key=lambda p: (p["fecha1"] or "9999-99-99", p["step"]))
 
         return jsonify({
             "status": "ok",
@@ -1958,7 +2088,6 @@ def productos_visualizables():
         import traceback
         traceback.print_exc()
         return jsonify({"status": "error", "message": str(e)}), 500
-
 
 @app.route('/convert-image/upload', methods=['POST'])
 def convert_image_upload():

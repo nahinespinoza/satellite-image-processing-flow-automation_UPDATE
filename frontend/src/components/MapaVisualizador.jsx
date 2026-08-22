@@ -126,10 +126,100 @@ function InspectorDePixel({
   return null;
 }
 
-function HerramientasDibujo({ onChange, position = "topleft" }) {
+/**
+ * Construye el contenido del popup editable (nombre + nota) para un
+ * puntero. Se pasa como función a bindPopup para que Leaflet la vuelva a
+ * llamar cada vez que se abre y así reflejar el valor guardado más reciente.
+ */
+function construirPopupPuntero(marker, emit) {
+  return () => {
+    const props = marker.feature.properties;
+
+    const container = document.createElement("div");
+    container.style.minWidth = "200px";
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "Nombre del puntero";
+    nameInput.value = props.name || "";
+    nameInput.style.cssText =
+      "width:100%;margin-bottom:6px;padding:4px 6px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:12px;";
+
+    const noteInput = document.createElement("textarea");
+    noteInput.placeholder = "Nota / descripción";
+    noteInput.value = props.note || "";
+    noteInput.rows = 3;
+    noteInput.style.cssText =
+      "width:100%;margin-bottom:6px;padding:4px 6px;box-sizing:border-box;border:1px solid #ccc;border-radius:4px;font-size:12px;resize:vertical;";
+
+    const coordsLabel = document.createElement("div");
+    const ll = marker.getLatLng();
+    coordsLabel.textContent = `📍 ${ll.lat.toFixed(6)}, ${ll.lng.toFixed(6)}`;
+    coordsLabel.style.cssText = "font-size:11px;color:#888;margin-bottom:6px;";
+
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "💾 Guardar";
+    saveBtn.style.cssText =
+      "width:100%;padding:6px;background:#2196f3;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:12px;font-weight:600;";
+    saveBtn.onclick = () => {
+      props.name = nameInput.value;
+      props.note = noteInput.value;
+      marker.setTooltipContent(props.name || "Puntero");
+      marker.closePopup();
+      if (typeof emit === "function") emit();
+    };
+
+    container.appendChild(coordsLabel);
+    container.appendChild(nameInput);
+    container.appendChild(noteInput);
+    container.appendChild(saveBtn);
+    return container;
+  };
+}
+
+/** Convierte un L.Marker "plano" en un puntero con nombre + nota editables. */
+function habilitarPunteroEditable(marker, emit, initialProps = {}) {
+  marker.feature = {
+    type: "Feature",
+    properties: {
+      name: initialProps.name || "",
+      note: initialProps.note || "",
+    },
+  };
+  marker.bindTooltip(initialProps.name || "Puntero", {
+    permanent: false,
+    direction: "top",
+  });
+  marker.bindPopup(construirPopupPuntero(marker, emit), { minWidth: 220 });
+  return marker;
+}
+
+function HerramientasDibujo({
+  onChange,
+  position = "topleft",
+  registerAddMarker,
+}) {
   const map = useMap();
   const drawnItemsRef = useRef(null);
   const controlRef = useRef(null);
+
+  // Guardamos las últimas versiones de los callbacks en refs para que el
+  // efecto de abajo NO tenga que reiniciarse cada vez que el padre se
+  // re-renderiza (ej. al escribir en los inputs de lat/lon/nombre/nota).
+  // Antes, `registerAddMarker` iba directo en las dependencias del efecto:
+  // como en cada render el padre pasaba una función nueva, el efecto se
+  // desmontaba/remontaba constantemente, borrando el FeatureGroup y el
+  // control de dibujo (por eso dejaba de dibujar y se perdían los puntos).
+  const onChangeRef = useRef(onChange);
+  const registerAddMarkerRef = useRef(registerAddMarker);
+
+  useEffect(() => {
+    onChangeRef.current = onChange;
+  }, [onChange]);
+
+  useEffect(() => {
+    registerAddMarkerRef.current = registerAddMarker;
+  }, [registerAddMarker]);
 
   useEffect(() => {
     if (!map) return;
@@ -138,7 +228,9 @@ function HerramientasDibujo({ onChange, position = "topleft" }) {
     drawnItemsRef.current = drawnItems;
 
     const emit = () => {
-      if (typeof onChange === "function") onChange(drawnItems.toGeoJSON());
+      if (typeof onChangeRef.current === "function") {
+        onChangeRef.current(drawnItems.toGeoJSON());
+      }
     };
 
     const control = new L.Control.Draw({
@@ -163,14 +255,36 @@ function HerramientasDibujo({ onChange, position = "topleft" }) {
     controlRef.current = control;
 
     const onCreated = (e) => {
-      drawnItems.addLayer(e.layer);
-      emit();
+      let layer = e.layer;
+      if (e.layerType === "marker") {
+        habilitarPunteroEditable(layer, emit);
+        drawnItems.addLayer(layer);
+        emit();
+        layer.openPopup(); // pide nombre/nota apenas se coloca
+      } else {
+        drawnItems.addLayer(layer);
+        emit();
+      }
     };
     const onEdited = () => emit();
     const onDeleted = () => emit();
     map.on(L.Draw.Event.CREATED, onCreated);
     map.on(L.Draw.Event.EDITED, onEdited);
     map.on(L.Draw.Event.DELETED, onDeleted);
+
+    // Permite que el panel externo (inputs de lat/lon manuales) agregue
+    // punteros programáticamente, reusando el mismo FeatureGroup y el
+    // mismo popup editable que los creados a mano con la barra de dibujo.
+    if (typeof registerAddMarkerRef.current === "function") {
+      registerAddMarkerRef.current((lat, lng, name, note) => {
+        const marker = L.marker([lat, lng]);
+        habilitarPunteroEditable(marker, emit, { name, note });
+        drawnItems.addLayer(marker);
+        emit();
+        map.panTo([lat, lng]);
+        marker.openPopup();
+      });
+    }
 
     return () => {
       map.off(L.Draw.Event.CREATED, onCreated);
@@ -184,9 +298,41 @@ function HerramientasDibujo({ onChange, position = "topleft" }) {
         map.removeLayer(drawnItemsRef.current);
         drawnItemsRef.current = null;
       }
+      if (typeof registerAddMarkerRef.current === "function") {
+        registerAddMarkerRef.current(null);
+      }
     };
-  }, [map, onChange, position]);
+    // OJO: SOLO map y position — nada de onChange/registerAddMarker aquí,
+    // esos ya se leen vía ref y no deben reiniciar el efecto.
+  }, [map, position]);
 
+  return null;
+}
+
+/**
+ * Evita un crash conocido (y nunca arreglado) de Leaflet:
+ * https://github.com/Leaflet/Leaflet/issues/6981
+ *
+ * `invalidateSize()` programa un `setTimeout(..., 200ms)` interno que
+ * guarda en `map._sizeTimer`. Si el contenedor del mapa se remueve del
+ * DOM (p.ej. al desmontar este componente al cambiar de pestaña) antes
+ * de que pasen esos 200ms, el timer igual se dispara e intenta leer la
+ * posición de un pane que ya no existe:
+ *   "Cannot read properties of undefined (reading '_leaflet_pos')"
+ * `map.remove()` de Leaflet NO limpia ese timer por su cuenta. Lo
+ * limpiamos acá a mano, justo antes de que el mapa se desmonte, para
+ * que ese callback fantasma nunca llegue a ejecutarse.
+ */
+function MapCrashGuard() {
+  const map = useMap();
+  useEffect(() => {
+    return () => {
+      if (map && map._sizeTimer) {
+        clearTimeout(map._sizeTimer);
+        map._sizeTimer = null;
+      }
+    };
+  }, [map]);
   return null;
 }
 
@@ -340,6 +486,53 @@ function PanelPixelComparacion({
   );
 }
 
+/** Panel bajo el mapa en modo simple: coordenada + valor del producto inspeccionado. */
+function PanelPixelSimple({ pixelInfo, item, onClose }) {
+  if (!pixelInfo) return null;
+
+  const { lat, lng, loading, data } = pixelInfo;
+
+  return (
+    <div style={estilos.pixelComparePanel}>
+      <div style={estilos.pixelCompareHeader}>
+        <strong style={{ fontSize: "13px" }}>
+          📍 Punto inspeccionado
+          {lat != null && lng != null
+            ? ` · ${Number(lat).toFixed(5)}, ${Number(lng).toFixed(5)}`
+            : ""}
+        </strong>
+        <button
+          type="button"
+          style={estilos.pixelCompareCerrar}
+          onClick={onClose}
+        >
+          Cerrar
+        </button>
+      </div>
+      {loading ? (
+        <div style={{ fontSize: "12px", color: "#666" }}>
+          Consultando el producto…
+        </div>
+      ) : (
+        <div style={estilos.pixelCompareCard}>
+          <div style={{ fontSize: "12px", fontWeight: 600 }}>
+            {item?.step}
+            {item?.band_name ? ` — ${item.band_name}` : ""}
+          </div>
+          <div style={estilos.pixelCompareValor}>
+            {formatearValorPixel(data)}
+          </div>
+          {data?.status === "ok" && data?.row != null && (
+            <div style={{ fontSize: "11px", color: "#888" }}>
+              fila {data.row}, col {data.col}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function MapaProducto({
   bounds,
   item,
@@ -349,6 +542,7 @@ function MapaProducto({
   onClosePixel,
   enableDraw,
   onGeomsChange,
+  registerAddMarker,
   mapRef,
   gotoLat,
   gotoLng,
@@ -400,7 +594,13 @@ function MapaProducto({
 
       {fitOnce && <FitBoundsOnce bounds={bounds} />}
       <GotoControl lat={gotoLat} lng={gotoLng} trigger={gotoTick} />
-      {enableDraw && <HerramientasDibujo onChange={onGeomsChange} />}
+      <MapCrashGuard />
+      {enableDraw && (
+        <HerramientasDibujo
+          onChange={onGeomsChange}
+          registerAddMarker={registerAddMarker}
+        />
+      )}
       {mapRef && <MapInstanceRegistrar mapRef={mapRef} />}
     </MapContainer>
   );
@@ -434,14 +634,64 @@ export default function MapaVisualizador({
   const [gotoLng, setGotoLng] = useState("");
   const [gotoTick, setGotoTick] = useState(0);
   const [geometrias, setGeometrias] = useState(null);
+
   const pathsConsultados = useRef(new Set());
+  // Bandera SÍNCRONA (no state) para saber si hay una consulta de bounds
+  // en curso. Se necesita porque, al montar el componente, el efecto que
+  // arranca la consulta de georreferencia (setLoading(true)) y el efecto
+  // de selección automática corren en el MISMO commit: el segundo lee el
+  // `loading` de state todavía desactualizado (false) y no espera a que
+  // termine el fetch. Con un ref, el primer efecto puede avisarle al
+  // segundo "ya arranqué" de forma inmediata, sin depender del re-render.
+  const cargaEnCursoRef = useRef(false);
   const mapLeftRef = useRef(null);
   const mapRightRef = useRef(null);
   const [panelCargaAbierto, setPanelCargaAbierto] = useState(false);
   const [productosDisco, setProductosDisco] = useState([]);
   const [cargandoDisco, setCargandoDisco] = useState(false);
   const [errorDisco, setErrorDisco] = useState(null);
+  const [parFiltro, setParFiltro] = useState("todos");
   const [seleccionDisco, setSeleccionDisco] = useState(() => new Set());
+  const addMarkerRef = useRef(null);
+  const handleRegisterAddMarker = useCallback((fn) => {
+    addMarkerRef.current = fn;
+  }, []);
+  const punteros = useMemo(() => {
+    if (!geometrias?.features?.length) return [];
+    return geometrias.features
+      .map((f, idx) => ({ f, idx }))
+      .filter(({ f }) => f.geometry?.type === "Point")
+      .map(({ f, idx }) => ({
+        idx,
+        name: f.properties?.name || `Puntero ${idx + 1}`,
+        note: f.properties?.note || "",
+        lng: f.geometry.coordinates[0],
+        lat: f.geometry.coordinates[1],
+      }));
+  }, [geometrias]);
+
+  const irAPuntero = useCallback((p) => {
+    setGotoLat(String(p.lat));
+    setGotoLng(String(p.lng));
+    setGotoTick((t) => t + 1);
+  }, []);
+  const [nuevoPunteroLat, setNuevoPunteroLat] = useState("");
+  const [nuevoPunteroLng, setNuevoPunteroLng] = useState("");
+  const [nuevoPunteroNombre, setNuevoPunteroNombre] = useState("");
+  const [nuevoPunteroNota, setNuevoPunteroNota] = useState("");
+
+  const agregarPunteroManual = useCallback(() => {
+    const lat = parseFloat(nuevoPunteroLat);
+    const lng = parseFloat(nuevoPunteroLng);
+    if (Number.isNaN(lat) || Number.isNaN(lng)) return;
+    if (typeof addMarkerRef.current === "function") {
+      addMarkerRef.current(lat, lng, nuevoPunteroNombre, nuevoPunteroNota);
+    }
+    setNuevoPunteroLat("");
+    setNuevoPunteroLng("");
+    setNuevoPunteroNombre("");
+    setNuevoPunteroNota("");
+  }, [nuevoPunteroLat, nuevoPunteroLng, nuevoPunteroNombre, nuevoPunteroNota]);
   useEffect(() => {
     setPixelInfo(null);
     setPixelInfoRight(null);
@@ -454,16 +704,25 @@ export default function MapaVisualizador({
       (it) => it.output_tiff && !pathsConsultados.current.has(it.output_tiff),
     );
     if (pendientes.length === 0) {
+      cargaEnCursoRef.current = false;
       setLoading(false);
       return;
     }
+    cargaEnCursoRef.current = true;
 
     async function cargarBounds() {
       setLoading(true);
       setError(null);
       const resultados = await Promise.all(
         pendientes.map(async (item) => {
-          pathsConsultados.current.add(item.output_tiff);
+          // OJO: NO marcamos el path como "consultado" acá todavía. Si lo
+          // hiciéramos antes de esperar la respuesta, una cancelación de
+          // este efecto (por ejemplo el doble-montaje de StrictMode en
+          // desarrollo, o salir/volver rápido de la pestaña) dejaría el
+          // path marcado para siempre aunque el fetch nunca haya llegado a
+          // aplicarse, y el mapa quedaba atascado en "Sin georreferencia"
+          // sin reintentar jamás. Lo marcamos recién más abajo, solo si el
+          // efecto no fue cancelado.
           const itemId = item.id || item.step;
           try {
             const res = await fetch(
@@ -472,10 +731,14 @@ export default function MapaVisualizador({
               )}`,
             );
             const data = await res.json();
+            console.log(
+              `[MapaVisualizador] geo-info-path(${itemId}) -> status=${data.status} has_georeference=${data.has_georeference} message=${data.message || ""}`,
+            );
             if (data.status === "ok" && data.has_georeference && data.bounds) {
               const b = data.bounds;
               return {
                 id: itemId,
+                path: item.output_tiff,
                 bounds: [
                   [b.south, b.west],
                   [b.north, b.east],
@@ -489,6 +752,7 @@ export default function MapaVisualizador({
             }
             return {
               id: itemId,
+              path: item.output_tiff,
               bounds: null,
               meta: {
                 has_georeference: false,
@@ -499,6 +763,7 @@ export default function MapaVisualizador({
             console.error(`[MapaVisualizador] geo-info falló ${itemId}:`, e);
             return {
               id: itemId,
+              path: item.output_tiff,
               bounds: null,
               meta: {
                 has_georeference: false,
@@ -508,7 +773,14 @@ export default function MapaVisualizador({
           }
         }),
       );
-      if (cancelado) return;
+      if (cancelado) {
+        // Efecto cancelado (desmontaje real o doble-invocación de
+        // StrictMode): NO marcamos nada como consultado, para que la
+        // próxima vez que el componente/efecto corra, vuelva a intentarlo
+        // en vez de quedarse atascado con boundsById vacío para siempre.
+        return;
+      }
+      for (const r of resultados) pathsConsultados.current.add(r.path);
       setBoundsById((prev) => {
         const next = { ...prev };
         for (const r of resultados) {
@@ -522,6 +794,7 @@ export default function MapaVisualizador({
         for (const r of resultados) next[r.id] = r.meta;
         return next;
       });
+      cargaEnCursoRef.current = false;
       setLoading(false);
     }
     cargarBounds();
@@ -532,11 +805,33 @@ export default function MapaVisualizador({
   }, [validItems]);
 
   // Selección automática
+  //
+  // Antes: chequeaba `!loading` leído de state, pero en el primer commit
+  // (justo al montar, o al re-montar al volver de otra pestaña) el efecto
+  // de arriba (Cargar bounds) todavía no había hecho efectivo su
+  // setLoading(true) para ESTE efecto — ambos corren en el mismo commit
+  // con el `loading` de state desactualizado. Resultado: este efecto
+  // "adivinaba" eligiendo validItems[0] ANTES de tener respuesta del
+  // backend, y si ese primer producto no tenía georreferencia, el mapa
+  // quedaba pegado en "Sin georreferencia" para siempre porque después
+  // no se volvía a re-evaluar la elección.
+  //
+  // Ahora: usa `cargaEnCursoRef` (ref síncrono) para esperar a que la
+  // consulta realmente termine, y se auto-corrige si el seleccionado
+  // actual no tiene bounds válidos (no solo cuando no hay selección),
+  // así que también se recupera solo al volver de otra pestaña.
   useEffect(() => {
-    if (selectedId) return;
+    if (cargaEnCursoRef.current) return; // aún consultando georreferencia
+
+    // Ya hay una selección con bounds válidos: no tocar nada (respeta la
+    // elección manual del usuario en el selector).
+    if (selectedId && boundsById[selectedId]) return;
+
     const conGeo = validItems.find((it) => boundsById[it.id || it.step]);
-    if (conGeo) setSelectedId(conGeo.id || conGeo.step);
-    else if (validItems.length > 0 && !loading) {
+    if (conGeo) {
+      setSelectedId(conGeo.id || conGeo.step);
+    } else if (!selectedId && validItems.length > 0) {
+      // Nada tiene georreferencia: al menos mostrar algo (visor de imagen).
       setSelectedId(validItems[0].id || validItems[0].step);
     }
   }, [boundsById, validItems, selectedId, loading]);
@@ -643,6 +938,11 @@ export default function MapaVisualizador({
   const selectedMeta = selectedId ? geoMetaById[selectedId] : null;
   const tieneGeo = Boolean(selectedBounds);
   const compareTieneGeo = Boolean(compareBounds);
+  useEffect(() => {
+    console.log(
+      `[MapaVisualizador] estado -> selectedId=${selectedId} mapaListo=${mapaListo} loading=${loading} tieneGeo=${tieneGeo} boundsKeys=[${Object.keys(boundsById).join(", ")}] selectedMetaMsg=${selectedMeta?.message || ""} selectedMetaGeo=${selectedMeta?.has_georeference}`,
+    );
+  }, [selectedId, mapaListo, loading, tieneGeo, boundsById, selectedMeta]);
   const previewUrl = selectedItem ? buildPreviewUrl(selectedItem) : null;
   const comparePreviewUrl = compareItem ? buildPreviewUrl(compareItem) : null;
   const nGeoms = geometrias?.features?.length || 0;
@@ -759,9 +1059,20 @@ export default function MapaVisualizador({
               flexWrap: "wrap",
             }}
           >
-            <strong style={{ fontSize: "13px" }}>
+            <strong style={{ fontSize: "13px" }} title={outputDir || undefined}>
               Productos en disco
-              {outputDir ? ` (${outputDir})` : ""}
+              {outputDir ? (
+                <span
+                  style={{
+                    marginLeft: "6px",
+                    fontSize: "11px",
+                    fontWeight: 400,
+                    color: "#999",
+                  }}
+                >
+                  📁 {outputDir.split("/").filter(Boolean).slice(-1)[0]}
+                </span>
+              ) : null}
             </strong>
             <button
               type="button"
@@ -792,25 +1103,102 @@ export default function MapaVisualizador({
             </div>
           )}
 
-          <div style={estilos.cargaLista}>
-            {productosDisco.map((p) => (
-              <label key={p.output_tiff} style={estilos.cargaItem}>
-                <input
-                  type="checkbox"
-                  checked={seleccionDisco.has(p.output_tiff)}
-                  onChange={() => toggleSeleccionDisco(p.output_tiff)}
-                />
-                <span style={{ fontSize: "12px" }}>
-                  <strong>{p.step}</strong>
-                  {p.band_name ? (
-                    <span style={{ color: "#666" }}> — {p.band_name}</span>
-                  ) : null}
-                </span>
-              </label>
-            ))}
-          </div>
+          {(() => {
+            // Pares únicos presentes en la respuesta, ordenados por fecha1
+            const pares = [
+              ...new Map(
+                productosDisco
+                  .filter((p) => p.par)
+                  .map((p) => [
+                    p.par,
+                    { par: p.par, fecha1: p.fecha1, fecha2: p.fecha2 },
+                  ]),
+              ).values(),
+            ].sort((a, b) => (a.fecha1 || "").localeCompare(b.fecha1 || ""));
 
-          <div style={{ marginTop: "10px", display: "flex", gap: "8px" }}>
+            const hayPares = pares.length > 0;
+            const sueltos = productosDisco.some((p) => !p.par);
+
+            const visibles =
+              parFiltro === "todos"
+                ? productosDisco
+                : productosDisco.filter((p) => p.par === parFiltro);
+
+            return (
+              <>
+                {hayPares && (
+                  <div style={{ marginBottom: "8px" }}>
+                    <label style={estilos.selectorLabel}>
+                      Par (fecha1 → fecha2):{" "}
+                    </label>
+                    <select
+                      style={estilos.select}
+                      value={parFiltro}
+                      onChange={(e) => setParFiltro(e.target.value)}
+                    >
+                      <option value="todos">
+                        Todos los pares ({productosDisco.length})
+                      </option>
+                      {pares.map((p) => (
+                        <option key={p.par} value={p.par}>
+                          {p.fecha1} → {p.fecha2}
+                        </option>
+                      ))}
+                      {sueltos && (
+                        <option value="__sueltos__">
+                          Sin par identificado
+                        </option>
+                      )}
+                    </select>
+                  </div>
+                )}
+
+                <div style={estilos.cargaLista}>
+                  {visibles.map((p) => {
+                    const seleccionado = seleccionDisco.has(p.output_tiff);
+                    return (
+                      <label
+                        key={p.output_tiff}
+                        style={{
+                          ...estilos.cargaItem,
+                          ...(seleccionado ? estilos.cargaItemActivo : {}),
+                        }}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={seleccionado}
+                          onChange={() => toggleSeleccionDisco(p.output_tiff)}
+                        />
+                        <span style={{ fontSize: "12px" }}>
+                          {p.par && (
+                            <span style={{ color: "#667eea", fontWeight: 700 }}>
+                              [{p.fecha1} → {p.fecha2}]{" "}
+                            </span>
+                          )}
+                          <strong>{p.step}</strong>
+                          {p.band_name ? (
+                            <span style={{ color: "#666" }}>
+                              {" "}
+                              — {p.band_name}
+                            </span>
+                          ) : null}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
+
+          <div
+            style={{
+              marginTop: "10px",
+              display: "flex",
+              gap: "8px",
+              flexShrink: 0,
+            }}
+          >
             <button
               type="button"
               style={{
@@ -1071,22 +1459,30 @@ export default function MapaVisualizador({
           />
         </>
       ) : modo === "single" && tieneGeo && mapaListo && selectedBounds ? (
-        <div style={estilos.mapaWrapper}>
-          <MapaProducto
-            bounds={selectedBounds}
-            item={selectedItem}
-            previewUrl={previewUrl}
-            onPixel={setPixelInfo}
+        <>
+          <div style={estilos.mapaWrapper}>
+            <MapaProducto
+              bounds={selectedBounds}
+              item={selectedItem}
+              previewUrl={previewUrl}
+              onPixel={setPixelInfo}
+              pixelInfo={pixelInfo}
+              onClosePixel={() => setPixelInfo(null)}
+              enableDraw
+              onGeomsChange={setGeometrias}
+              registerAddMarker={handleRegisterAddMarker}
+              gotoLat={gotoLat}
+              gotoLng={gotoLng}
+              gotoTick={gotoTick}
+              fitOnce
+            />
+          </div>
+          <PanelPixelSimple
             pixelInfo={pixelInfo}
-            onClosePixel={() => setPixelInfo(null)}
-            enableDraw
-            onGeomsChange={setGeometrias}
-            gotoLat={gotoLat}
-            gotoLng={gotoLng}
-            gotoTick={gotoTick}
-            fitOnce
+            item={selectedItem}
+            onClose={() => setPixelInfo(null)}
           />
-        </div>
+        </>
       ) : (
         <div style={estilos.mapaWrapper}>
           <div style={estilos.imageViewer}>
@@ -1120,9 +1516,64 @@ export default function MapaVisualizador({
         <div style={estilos.dibujoPanel}>
           <div style={{ fontSize: "12px", color: "#555" }}>
             {nGeoms === 0
-              ? "Usa la barra del mapa (arriba izquierda) para dibujar puntos, líneas o polígonos."
+              ? "Usa la barra del mapa (arriba izquierda) para dibujar puntos, líneas o polígonos, o agrega un puntero por coordenadas abajo."
               : `${nGeoms} geometría(s) dibujada(s)`}
           </div>
+
+          <div
+            style={{
+              display: "flex",
+              gap: "6px",
+              flexWrap: "wrap",
+              margin: "8px 0",
+              alignItems: "center",
+            }}
+          >
+            <input
+              type="text"
+              placeholder="Lat"
+              value={nuevoPunteroLat}
+              onChange={(e) => setNuevoPunteroLat(e.target.value)}
+              style={{ ...estilos.gotoInput, width: "90px" }}
+            />
+            <input
+              type="text"
+              placeholder="Lon"
+              value={nuevoPunteroLng}
+              onChange={(e) => setNuevoPunteroLng(e.target.value)}
+              style={{ ...estilos.gotoInput, width: "90px" }}
+            />
+            <input
+              type="text"
+              placeholder="Nombre"
+              value={nuevoPunteroNombre}
+              onChange={(e) => setNuevoPunteroNombre(e.target.value)}
+              style={{ ...estilos.gotoInput, width: "120px" }}
+            />
+            <input
+              type="text"
+              placeholder="Nota"
+              value={nuevoPunteroNota}
+              onChange={(e) => setNuevoPunteroNota(e.target.value)}
+              style={{ ...estilos.gotoInput, width: "160px" }}
+            />
+            <button
+              type="button"
+              onClick={agregarPunteroManual}
+              disabled={!nuevoPunteroLat || !nuevoPunteroLng}
+              style={{
+                ...estilos.gotoBtn,
+                opacity: !nuevoPunteroLat || !nuevoPunteroLng ? 0.5 : 1,
+                cursor:
+                  !nuevoPunteroLat || !nuevoPunteroLng
+                    ? "not-allowed"
+                    : "pointer",
+              }}
+            >
+              📍 Agregar puntero
+            </button>
+          </div>
+
           <button
             type="button"
             onClick={descargarGeoJSON}
@@ -1135,6 +1586,55 @@ export default function MapaVisualizador({
           >
             ⬇️ Exportar GeoJSON
           </button>
+
+          {punteros.length > 0 && (
+            <div style={{ marginTop: "10px" }}>
+              <div
+                style={{
+                  fontSize: "12px",
+                  color: "#555",
+                  fontWeight: 600,
+                  marginBottom: "4px",
+                }}
+              >
+                📌 Punteros activos ({punteros.length})
+              </div>
+              <div
+                style={{
+                  maxHeight: "160px",
+                  overflowY: "auto",
+                  border: "1px solid #eee",
+                  borderRadius: "6px",
+                }}
+              >
+                {punteros.map((p) => (
+                  <div
+                    key={p.idx}
+                    onClick={() => irAPuntero(p)}
+                    title="Click para ir a este puntero"
+                    style={{
+                      padding: "6px 8px",
+                      borderBottom: "1px solid #f0f0f0",
+                      cursor: "pointer",
+                      fontSize: "12px",
+                    }}
+                  >
+                    <div style={{ fontWeight: 600 }}>{p.name}</div>
+                    {p.note && <div style={{ color: "#777" }}>{p.note}</div>}
+                    <div style={{ color: "#aaa", fontSize: "11px" }}>
+                      {p.lat.toFixed(6)}, {p.lng.toFixed(6)}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div
+                style={{ fontSize: "11px", color: "#999", marginTop: "4px" }}
+              >
+                Para borrar un puntero usa el ícono de basura (🗑) de la barra
+                de dibujo, arriba a la izquierda del mapa.
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1185,11 +1685,18 @@ const estilos = {
     borderRadius: "8px",
     padding: "10px",
     marginBottom: "8px",
-    maxHeight: "220px",
-    overflowY: "auto",
+    display: "flex",
+    flexDirection: "column",
+    // El panel en sí NO scrollea: solo la lista de adentro (cargaLista) lo
+    // hace, así el header y el botón "Añadir al mapa" quedan siempre
+    // visibles y no hace falta hacer scroll dos veces (uno para bajar en
+    // los productos y otro para llegar al botón).
+    maxHeight: "min(60vh, 420px)",
   },
   cargaLista: {
-    maxHeight: "140px",
+    flex: "1 1 auto",
+    minHeight: "80px",
+    maxHeight: "none",
     overflowY: "auto",
     display: "flex",
     flexDirection: "column",
@@ -1204,6 +1711,11 @@ const estilos = {
     borderRadius: "4px",
     border: "1px solid #eee",
     cursor: "pointer",
+    transition: "background 0.15s ease, border-color 0.15s ease",
+  },
+  cargaItemActivo: {
+    background: "#eef1ff",
+    borderColor: "#667eea",
   },
   toolbar: {
     display: "flex",

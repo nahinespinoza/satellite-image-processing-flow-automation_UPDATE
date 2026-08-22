@@ -50,14 +50,19 @@ export async function procesarFlujo(inputs, outputDir, params = {}) {
   return response.json();
 }
 
-// ==================== MODIFICADA: ahora acepta params ====================
-export async function procesarFlujoBatch(mainFolder, params = {}) {
-  const response = await fetch(`${API_BASE}/procesar_flujo_batch`, {
+// ==================== MODIFICADA: ahora usa /procesar_flujo_batch_auto ====================
+export async function procesarFlujoBatch(
+  mainFolder,
+  params = {},
+  diasEsperados = 12,
+) {
+  const response = await fetch(`${API_BASE}/procesar_flujo_batch_auto`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       main_folder: mainFolder,
-      params, // <-- NUEVO
+      dias_esperados: diasEsperados,
+      params,
     }),
   });
 
