@@ -68,7 +68,7 @@ const ProcessorUI = () => {
   const [batchStatusColor, setBatchStatusColor] = useState("#888");
 
   const [pipelineParams, setPipelineParams] = useState({
-    subset_region: "0,0,24165,4188",
+    subset_region: "",
     snaphu_tile_rows: 4,
     snaphu_tile_cols: 4,
     snaphu_processors: 4,
@@ -298,9 +298,9 @@ const ProcessorUI = () => {
         style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "10px" }}
       >
         <ParamField
-          label="Subset (x,y,ancho,alto)"
+          label="Área de interés (POLYGON WKT) *"
           name="subset_region"
-          hint="Ej: 0,0,24165,4188"
+          hint="Obligatorio. Ejemplo: POLYGON((-78.7021 -2.744,-78.4572 -2.744,-78.4572 -2.5278,-78.7021 -2.5278,-78.7021 -2.744))"
         />
         <ParamField label="Tile Rows" name="snaphu_tile_rows" type="number" />
         <ParamField label="Tile Cols" name="snaphu_tile_cols" type="number" />
@@ -373,6 +373,16 @@ const ProcessorUI = () => {
     }
     if (!outputDir) {
       setStatus("❌ Especifica la carpeta de salida");
+      setStatusColor("#d32f2f");
+      return;
+    }
+    if (
+      selectedStep === "GRAFICO_4.xml" &&
+      !pipelineParams.subset_region.trim()
+    ) {
+      setStatus(
+        "❌ El Gráfico 4 (Subset) requiere el Área de interés (POLYGON WKT) en Parámetros Configurables",
+      );
       setStatusColor("#d32f2f");
       return;
     }
@@ -468,6 +478,13 @@ const ProcessorUI = () => {
       setStatusColor("#d32f2f");
       return;
     }
+    if (!pipelineParams.subset_region.trim()) {
+      setStatus(
+        "❌ El flujo completo requiere el Área de interés (POLYGON WKT) en Parámetros Configurables (lo necesita el Gráfico 4)",
+      );
+      setStatusColor("#d32f2f");
+      return;
+    }
     setLoading(true);
     setProgress(0);
     setFlowPreviews([]);
@@ -555,6 +572,13 @@ const ProcessorUI = () => {
   const handleProcesarFlujoBatch = async () => {
     if (!mainFolderPath.trim()) {
       setBatchStatus("❌ Especifica la carpeta principal");
+      setBatchStatusColor("#d32f2f");
+      return;
+    }
+    if (!pipelineParams.subset_region.trim()) {
+      setBatchStatus(
+        "❌ El batch requiere el Área de interés (POLYGON WKT) en Parámetros Configurables (lo necesita el Gráfico 4 en cada par)",
+      );
       setBatchStatusColor("#d32f2f");
       return;
     }

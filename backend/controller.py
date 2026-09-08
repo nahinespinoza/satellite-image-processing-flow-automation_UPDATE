@@ -18,6 +18,25 @@ import numpy as np
 app = Flask(__name__)
 CORS(app)
 
+# ==================== CONFIGURACIÓN DE RUTAS (AJUSTAR SEGÚN CADA PC) ====================
+# Estructura asumida: <PROJECT_ROOT>/backend/controller.py (este archivo) y
+# <PROJECT_ROOT>/Scripts_Automatizacion_Snaphu/... (scripts de los pasos 5-7).
+BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
+
+# Carpeta de los scripts de automatización de Snaphu. Queda relativa al
+# proyecto, así que no hay que tocarla al cambiar de PC -- solo si cambia
+# la estructura de carpetas.
+SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "Scripts_Automatizacion_Snaphu")
+
+# Binarios externos de SNAP / SNAPHU: dependen de la instalación de cada
+# máquina. Se pueden sobreescribir con variables de entorno (GPT_BIN,
+# SNAPHU_BIN, PCONVERT_BIN) sin tocar el código; si no se definen, se usa
+# el valor por defecto de abajo -- CAMBIAR según la PC donde se ejecute.
+GPT_BIN = os.environ.get("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
+SNAPHU_BIN = os.environ.get("SNAPHU_BIN", "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu")
+PCONVERT_BIN = os.environ.get("PCONVERT_BIN", "/home/nahin/esa-snap/bin/pconvert")
+
 # Nombre de carpeta descriptivo por cada gráfico. Cada ejecución crea/usa
 # esta subcarpeta dentro del output_dir para que los resultados de un
 # gráfico no se mezclen con los de otro ni queden con nombres poco claros.
@@ -33,29 +52,29 @@ GRAPH_LABELS = {
 PROCESSORS = {
     "SNAPHU_EXPORT": {
         "name": "Snaphu Export (Gráfico 5)",
-        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/Prueba_Subcarpetas_FUNCIONAL.py",
+        "script": os.path.join(SCRIPTS_DIR, "Prueba_Subcarpetas_FUNCIONAL.py"),
         "type": "python"
     },
     "SNAPHU_UNWRAPPING": {
         "name": "Snaphu Unwrapping (Gráfico 6)",
-        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/Prueba_Subcarpetas_FUNCIONAL.py",  # mismo script, pero se puede separar después
+        "script": os.path.join(SCRIPTS_DIR, "Prueba_Subcarpetas_FUNCIONAL.py"),  # mismo script, pero se puede separar después
         "type": "python"
     },
     "PHASE_TO_DISPLACEMENT": {
         "name": "Phase to Displacement",
-        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/phase_to_displacement.py",
+        "script": os.path.join(SCRIPTS_DIR, "phase_to_displacement.py"),
         "type": "python"
     },
     "TERRAIN_CORRECTION": {
         "name": "Terrain Correction + Máscara",
-        "script": "/home/nahin/Documentos/Proyectos_Personales/SNAP_V1.2/satellite-image-processing-flow-automation_UPDATE/Scripts_Automatizacion_Snaphu/TerrainCorrection.py",
+        "script": os.path.join(SCRIPTS_DIR, "TerrainCorrection.py"),
         "type": "python"
     },
 }
 
 # ==================== PARÁMETROS CONFIGURABLES POR EL USUARIO ====================
 DEFAULT_PARAMS = {
-    "subset_region": "0,0,24165,4188",
+    "subset_region": "",
     "snaphu_tile_rows": 4,
     "snaphu_tile_cols": 4,
     "snaphu_processors": 4,
@@ -117,7 +136,7 @@ def _generar_preview_individual(dim_path, band_pattern, label):
 
         resultado = exportar_banda_a_geotiff(
             dim_path, band_pattern, preview_tiff,
-            gpt_bin="/home/nahin/esa-snap/bin/gpt",
+            gpt_bin=GPT_BIN,
             label=label,
         )
         resultado["step"] = label
@@ -243,6 +262,16 @@ def procesar():
         output_file = request.json['output']
         user_params = request.json.get('params', {})
 
+        # El Grafo 4 (Subset) necesita el área de interés (geoRegion). Sin
+        # ella el gráfico no se puede recortar y gpt fallaría de todos
+        # modos -- se avisa de una vez en vez de dejar que gpt truene.
+        graph_basename_check = os.path.basename(graph)
+        if graph_basename_check == "GRAFICO_4.xml" and not user_params.get("subset_region"):
+            return jsonify({
+                "status": "error",
+                "message": "Debes indicar el área de interés (POLYGON WKT) en los parámetros configurables antes de procesar el Gráfico 4."
+            }), 400
+
         # Convertir a lista si es un solo archivo
         if isinstance(input_data, str):
             input_files = [input_data]
@@ -323,7 +352,7 @@ def procesar():
         os.makedirs(output_dir, exist_ok=True)
         if not output_file.lower().endswith('.dim'):
             output_file += '.dim'
-        GPT_PATH = "/home/nahin/esa-snap/bin/gpt"
+        GPT_PATH = GPT_BIN
 
         # Construir lista de argumentos
         cmd_list = [GPT_PATH, graph]
@@ -333,9 +362,16 @@ def procesar():
             cmd_list.append(f"-PinputFile2={absolute_input_files[1]}")
         
         # Inyectar parámetros del usuario (ej: subsetRegion, etc.)
+        # El graph XML usa el nombre "geoRegion" (parámetro nativo del
+        # operador Subset de SNAP), no "subset_region" -- se renombra igual
+        # que ya hace el flujo completo, para no mandarle a gpt un -P que
+        # el gráfico no reconoce.
         for k, v in user_params.items():
-            if v not in [None, ""]:
-                cmd_list.append(f"-P{k}={v}")
+            if v in [None, ""]:
+                continue
+            if k == "subset_region":
+                k = "geoRegion"
+            cmd_list.append(f"-P{k}={v}")
 
         result = subprocess.run(cmd_list, capture_output=True, text=True)
 
@@ -425,6 +461,15 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
     params = {**DEFAULT_PARAMS, **user_params}
     print(f"[DEBUG] Parámetros efectivos: {params}")
 
+    # Validar ANTES de correr nada: el Paso 4 (Subset) necesita el polygon,
+    # y sin él fallaría de todos modos -- mejor avisar de una vez que
+    # gastar minutos/horas en los Pasos 1-3 para recién enterarse al final.
+    if not params.get("subset_region"):
+        msg = "Debes indicar el área de interés (POLYGON WKT) en los parámetros configurables."
+        _actualizar_progreso(status="error", current_step="1-4", message=msg)
+        return {"status": "error", "step": "1-4", "message": msg, "visualizaciones": visualizaciones_generadas}, 500
+
+
     # ==================== PASOS 1-4: GRÁFICOS XML (GPT) ====================
     graph_files = {
         "1": os.path.join(backend_dir, "files", "GRAFICO_1.xml"),
@@ -433,7 +478,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         "3": os.path.join(backend_dir, "files", "GRAFICO_3.xml"),
         "4": os.path.join(backend_dir, "files", "GRAFICO_4.xml"),
     }
-    GPT_PATH = "/home/nahin/esa-snap/bin/gpt"
+    GPT_PATH = GPT_BIN
 
     def ejecutar_grafo(label, input1, output_file, input2=None, extra_params=None):
         """
@@ -543,13 +588,15 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         )
         _exportar_viz("Paso 3", out3, "Phase", "paso3_Phase.tif")
 
-        # --- Paso 4: Subset, recibe la salida de 3 ---
+                # --- Paso 4: Subset, recibe la salida de 3 ---
         out4 = ejecutar_grafo(
             "4", out3,
             os.path.join(output_dir, carpeta_para_grafo(graph_files["4"]), f"{name1}_step_4.dim"),
-            extra_params={"subsetRegion": params["subset_region"]}
+            extra_params={"geoRegion": params["subset_region"]}
         )
         _exportar_viz("Paso 4", out4, "Phase", "paso4_Phase.tif")
+
+
     except RuntimeError as e:
         _actualizar_progreso(status="error", current_step="1-4", message=str(e))
         return {"status": "error", "step": "1-4", "message": str(e), "visualizaciones": visualizaciones_generadas}, 500
@@ -570,8 +617,8 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         base_path = Path(output_dir)
         env = os.environ.copy()
         env["BASE_DIR"] = str(base_path)
-        env["GPT_BIN"] = "/home/nahin/esa-snap/bin/gpt"
-        env["SNAPHU_BIN"] = "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu"
+        env["GPT_BIN"] = GPT_BIN
+        env["SNAPHU_BIN"] = SNAPHU_BIN
         env["NON_INTERACTIVE"] = "1"
 
         # Parámetros configurables del usuario
@@ -775,6 +822,77 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         "visualizaciones": visualizaciones_generadas
     }, 200
 
+@app.route('/nueva_carpeta_salida', methods=['POST'])
+def nueva_carpeta_salida():
+    """
+    Calcula y CREA una carpeta de salida nueva para una sesión de
+    procesamiento por GRÁFICOS/PASOS INDIVIDUALES (endpoints /procesar y
+    /procesar_paso), con el mismo criterio anti-sobreescritura que ya usa
+    /procesar_flujo para el flujo completo: nombre con las fechas de
+    master/slave + un sufijo, y "(1)", "(2)", ... si ya existe una carpeta
+    con ese nombre.
+
+    IMPORTANTE -- a diferencia de /procesar_flujo, este endpoint NO se
+    llama en cada paso: /procesar y /procesar_paso son secuenciales y cada
+    uno busca la salida del paso anterior DENTRO del mismo output_dir (ej.
+    el Gráfico 2a busca la salida del Gráfico 1 ahí adentro, el paso
+    PHASE_TO_DISPLACEMENT busca la del paso SNAPHU_FULL, etc.). Por eso el
+    frontend debe:
+      1) Llamar a /nueva_carpeta_salida UNA sola vez, al empezar a procesar
+         un par de imágenes nuevo (o un subset nuevo del mismo par).
+      2) Reusar el "output_dir" que devuelve esta llamada en TODAS las
+         llamadas siguientes a /procesar y /procesar_paso de esa sesión.
+    Si en cambio se llamara a este endpoint antes de cada gráfico
+    individual, cada uno terminaría en una carpeta distinta y ninguno
+    encontraría la salida del anterior.
+
+    Espera JSON:
+    {
+      "inputs": ["archivo_master.zip", "archivo_slave.zip"],
+      "base_dir": "/ruta/opcional",   <-- opcional, default: backend/files/output
+      "sufijo": "individual"          <-- opcional, default: "individual"
+    }
+    Devuelve: {"status": "ok", "output_dir": "<ruta absoluta creada>"}
+    """
+    try:
+        data = request.json or {}
+        input_files = data.get('inputs', [])
+        base_dir = data.get('base_dir')
+        sufijo = data.get('sufijo', 'individual')
+
+        if isinstance(input_files, str):
+            input_files = [input_files]
+        if not input_files:
+            return jsonify({
+                "status": "error",
+                "message": "Se requiere 'inputs' con al menos el archivo master (idealmente master + slave) "
+                           "para poder nombrar la carpeta con sus fechas."
+            }), 400
+
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        base_dir = os.path.abspath(base_dir) if base_dir else os.path.join(backend_dir, "files", "output")
+
+        absolute_input_files = []
+        for f in input_files:
+            resuelto = _resolver_input_absoluto(f, backend_dir)
+            if resuelto is None:
+                return jsonify({"status": "error", "message": f"Archivo no encontrado: {f}"}), 404
+            absolute_input_files.append(resuelto)
+
+        nombre = _nombre_carpeta_corrida(absolute_input_files, sufijo=sufijo)
+        output_dir = _carpeta_salida_unica(os.path.join(base_dir, nombre))
+        os.makedirs(output_dir, exist_ok=True)
+
+        print(f"[INFO] Nueva carpeta de sesión individual creada: {output_dir}")
+        return jsonify({"status": "ok", "output_dir": output_dir})
+
+    except Exception as e:
+        print(f"[ERROR] Excepción en nueva_carpeta_salida: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.route('/procesar_flujo', methods=['POST'])
 def procesar_flujo():
     """
@@ -847,7 +965,21 @@ def procesar_flujo():
                 }), 404
             
             absolute_input_files.append(abs_path)
-        
+
+        # ── Carpeta de salida: fecha master/slave + protección anti-sobreescritura ──
+        # El frontend puede mandar siempre el mismo output_dir (ej. ".../output/completo"),
+        # lo que haría que cada corrida pise a la anterior. En vez de usar ese path tal
+        # cual, se conserva su carpeta CONTENEDORA (el "padre") y se arma ahí mismo un
+        # nombre descriptivo con las fechas master/slave; si ya existe una carpeta con
+        # ese nombre (mismo par de fechas, sea con el mismo subset o uno distinto), se
+        # agrega un sufijo "(1)", "(2)", ... para no perder la corrida anterior.
+        output_dir_recibido = os.path.abspath(output_dir)
+        carpeta_padre = os.path.dirname(output_dir_recibido) or output_dir_recibido
+        nombre_deseado = _nombre_carpeta_corrida(absolute_input_files, sufijo="completo")
+        output_dir = _carpeta_salida_unica(os.path.join(carpeta_padre, nombre_deseado))
+        os.makedirs(output_dir, exist_ok=True)
+        print(f"[INFO] output_dir recibido: {output_dir_recibido} -> carpeta final de esta corrida: {output_dir}")
+
         result, code = _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir, user_params)
         return jsonify(result), code
 
@@ -919,6 +1051,95 @@ def _extraer_fecha_sentinel(filename):
         return datetime.strptime(match.group(1), "%Y%m%d").date()
     except ValueError:
         return None
+
+
+def _nombre_carpeta_corrida(absolute_input_files, sufijo="completo"):
+    """
+    Arma el nombre descriptivo de carpeta para una corrida (sea el flujo
+    completo o una sesión de gráficos/pasos individuales), a partir de las
+    fechas de master y slave codificadas en el nombre de archivo
+    Sentinel-1: "<fecha_master>_<fecha_slave>_<sufijo>".
+
+    Si no se puede extraer la fecha de alguna de las dos imágenes (ej.
+    archivos renombrados a mano, o un solo archivo de entrada), cae a un
+    nombre con timestamp de la corrida en vez de fallar o usar un nombre
+    fijo que se pisaría en la próxima ejecución.
+    """
+    fecha_master = _extraer_fecha_sentinel(absolute_input_files[0]) if len(absolute_input_files) > 0 else None
+    fecha_slave = _extraer_fecha_sentinel(absolute_input_files[1]) if len(absolute_input_files) > 1 else None
+
+    if fecha_master and fecha_slave:
+        return f"{fecha_master.strftime('%Y%m%d')}_{fecha_slave.strftime('%Y%m%d')}_{sufijo}"
+
+    print("[WARN] No se pudo extraer la fecha de master/slave desde el nombre de archivo "
+          "(¿fueron renombrados manualmente?). Se usa un nombre de carpeta con timestamp "
+          "de la corrida en su lugar, para no pisar ejecuciones anteriores.")
+    return f"{sufijo}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+
+def _resolver_input_absoluto(input_file, backend_dir):
+    """
+    Resuelve un nombre de archivo (posiblemente relativo) a una ruta
+    absoluta, probando las mismas ubicaciones que ya usan /procesar y
+    /procesar_flujo: files/images, files/output (nivel raíz), files/, o
+    tal cual se recibió. Como último recurso, busca recursivamente por
+    nombre dentro de files/output/ (para encontrar archivos generados
+    dentro de la subcarpeta de un paso anterior, ej. "Grafo 1 - Orbit/").
+    Devuelve la ruta absoluta, o None si no se encontró en ningún lado.
+    """
+    if os.path.isabs(input_file) and os.path.exists(input_file):
+        return os.path.abspath(input_file)
+
+    search_paths = [
+        os.path.join(backend_dir, "files", "images", input_file),
+        os.path.join(backend_dir, "files", "output", input_file),
+        os.path.join(backend_dir, "files", input_file),
+        input_file,
+    ]
+    for path in search_paths:
+        if os.path.exists(path):
+            return os.path.abspath(path)
+
+    basename = os.path.basename(input_file)
+    candidatos = glob.glob(
+        os.path.join(backend_dir, "files", "output", "**", basename),
+        recursive=True,
+    )
+    if candidatos:
+        return max(candidatos, key=os.path.getmtime)
+
+    return None
+
+
+def _carpeta_salida_unica(directorio_deseado):
+    """
+    Dado el path de carpeta que "idealmente" se quiere usar, devuelve una
+    ruta que garantiza no pisar nada existente: si `directorio_deseado` ya
+    existe, prueba "<nombre> (1)", "<nombre> (2)", ... (igual que el
+    comportamiento estándar de un explorador de archivos al copiar un
+    archivo/carpeta con un nombre repetido), hasta encontrar una libre.
+
+    Esto cubre tanto "mismo par de fechas, mismo subset, corrida de nuevo"
+    como "mismo par de fechas, subset distinto" -- en ambos casos NO se
+    debe sobreescribir la corrida anterior.
+
+    Importante: esta función solo CALCULA el nombre: no crea la carpeta.
+    El llamador es responsable de crearla (para evitar una condición de
+    carrera si dos requests llegan casi al mismo tiempo, conviene crearla
+    con os.makedirs inmediatamente después de llamar a esta función).
+    """
+    directorio_deseado = os.path.abspath(directorio_deseado)
+    if not os.path.exists(directorio_deseado):
+        return directorio_deseado
+
+    parent = os.path.dirname(directorio_deseado)
+    base_name = os.path.basename(directorio_deseado)
+    n = 1
+    while True:
+        candidato = os.path.join(parent, f"{base_name} ({n})")
+        if not os.path.exists(candidato):
+            return candidato
+        n += 1
 
 
 def _formar_pares_por_fecha(imagenes, dias_esperados=12):
@@ -2180,8 +2401,8 @@ def procesar_paso():
 
         env = os.environ.copy()
         env["BASE_DIR"] = str(base_path)
-        env["GPT_BIN"] = "/home/nahin/esa-snap/bin/gpt"
-        env["SNAPHU_BIN"] = "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu"
+        env["GPT_BIN"] = GPT_BIN
+        env["SNAPHU_BIN"] = SNAPHU_BIN
 
         # Parámetros configurables del usuario (se inyectan como variables de entorno)
         env["SNAPHU_TILE_ROWS"] = str(params["snaphu_tile_rows"])
@@ -2446,7 +2667,7 @@ def _generar_quicklook_pconvert(dim_path, band_name, output_tiff_path, pconvert_
     Returns:
         str|None: ruta al PNG generado, o None si falló.
     """
-    pconvert_bin = pconvert_bin or os.environ.get("PCONVERT_BIN", "/home/nahin/esa-snap/bin/pconvert")
+    pconvert_bin = pconvert_bin or PCONVERT_BIN
     try:
         output_dir = os.path.dirname(output_tiff_path)
         os.makedirs(output_dir, exist_ok=True)
@@ -2511,7 +2732,7 @@ def exportar_banda_a_geotiff(dim_path, band_pattern, output_tiff_path, gpt_bin=N
                "output_tiff": str|None, "band_name": str|None}
     """
     result = {"status": "error", "message": None, "output_tiff": None, "band_name": None}
-    gpt_bin = gpt_bin or os.environ.get("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
+    gpt_bin = gpt_bin or GPT_BIN
 
     try:
         dim_path = str(dim_path)

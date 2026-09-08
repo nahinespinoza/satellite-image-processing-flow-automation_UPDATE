@@ -23,8 +23,13 @@
 #   Gráfico 5 — Snaphu Export (gpt)
 #     Lee el .dim del Gráfico 4 (Subset) y genera los archivos binarios que
 #     snaphu necesita (Phase_*.img, coh_*.img, snaphu.conf) en la carpeta
-#     SNAPHU. Usa 4x4 tiles con overlap de 300 px, configuración confirmada
-#     empíricamente como estable y ~4x más rápida que un solo tile.
+#     SNAPHU. El tiling (filas/columnas/overlap/procesadores/costThreshold)
+#     es configurable desde la UI (TILE_ROWS, TILE_COLS, ROW_OVERLAP,
+#     COL_OVERLAP, PROCESSORS, COST_THRESHOLD); por defecto usa 4x4 tiles
+#     con overlap de 300 px, configuración confirmada empíricamente como
+#     estable y ~4x más rápida que un solo tile PARA LA ESCENA COMPLETA.
+#     Si el subset es chico, el Gráfico 6 reduce esta config automáticamente
+#     antes de correr snaphu (ver más abajo).
 #
 #   Gráfico 6 — Snaphu Unwrapping (binario snaphu en terminal)
 #     Antes de ejecutar snaphu, valida tamaño y contenido (NaN/Inf, rango de
@@ -230,9 +235,62 @@ def validate_snaphu_conf(conf_path):
     return found
 
 # =============================================================================
-# PASO 0 – RECOLECTAR RUTAS
+# DETECCIÓN DEL ANCHO REAL (LINELENGTH) DEL PRODUCTO EXPORTADO
 # =============================================================================
-# =============================================================================
+# LINELENGTH casi nunca viene como parámetro activo en snaphu.conf (SNAP no
+# lo escribe así), así que no basta con buscarlo ahí. El ancho real del
+# subset se puede recuperar de dos fuentes más confiables antes de caer al
+# valor fijo 6041 (que solo es correcto si el subset mide lo mismo que la
+# imagen con la que se probó originalmente):
+#
+#   1) El header ENVI (.hdr) que SNAP genera junto a cada .img exportado
+#      (ej: Phase_ifg_VV_....snaphu.hdr), que trae "samples = <ancho>".
+#      Es la fuente más directa: describe el producto que realmente se
+#      exportó, sea cual sea el tamaño del POLYGON usado en el Subset.
+#   2) El comentario con el comando snaphu sugerido que SNAP deja al final
+#      de snaphu.conf, ej: "# snaphu -f snaphu.conf Phase_x.snaphu.img 6238"
+#      -- el último número de esa línea es el ancho.
+def _leer_width_desde_hdr(img_path):
+    """
+    Busca el header ENVI (.hdr) asociado a un .img y le lee "samples"
+    (el ancho en píxeles). Prueba las dos convenciones de nombre que usa
+    SNAP/BEAM (reemplazando la extensión, o agregando .hdr al final).
+    Devuelve (ancho, ruta_hdr) o (None, None) si no lo encuentra.
+    """
+    img_path = Path(img_path)
+    candidatos = [
+        img_path.with_suffix(".hdr"),
+        Path(str(img_path) + ".hdr"),
+    ]
+    for hdr_path in candidatos:
+        if not hdr_path.exists():
+            continue
+        try:
+            with open(hdr_path, encoding="utf-8", errors="ignore") as f:
+                for line in f:
+                    if "=" in line and line.split("=", 1)[0].strip().lower() == "samples":
+                        valor = line.split("=", 1)[1].strip()
+                        return int(valor), str(hdr_path)
+        except (OSError, ValueError):
+            continue
+    return None, None
+
+def _leer_width_desde_comentario_conf(conf_text, phase_filename):
+    """
+    Busca, dentro del texto de snaphu.conf, la línea comentada con el
+    comando snaphu sugerido por SNAP (contiene el nombre del archivo de
+    fase) y extrae el último número de esa línea, que es el ancho.
+    Devuelve el ancho (int) o None si no encuentra una línea así.
+    """
+    for line in conf_text.splitlines():
+        stripped = line.strip().lstrip("#").strip()
+        if stripped.startswith("snaphu") and phase_filename in stripped:
+            tokens = stripped.split()
+            if tokens and tokens[-1].isdigit():
+                return int(tokens[-1])
+    return None
+
+
 # PASO 0 – RECOLECTAR RUTAS (MODIFICADO)
 # =============================================================================
 # =============================================================================
@@ -253,6 +311,26 @@ def collect_inputs():
     import_dir = os.environ.get("IMPORT_DIR")
     gpt_bin = os.environ.get("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
     snaphu_bin = os.environ.get("SNAPHU_BIN", "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu")
+
+    # ── Parámetros de tiling configurables desde la UI/controller ────────
+    # Estos son los valores que el usuario ve y puede editar en el panel
+    # "Parámetros Configurables". Los defaults son EXACTAMENTE los que
+    # antes estaban hardcodeados en el Gráfico 5, así que si el controller
+    # no manda nada, el comportamiento no cambia.
+    # NOTA: estos son el punto de PARTIDA deseado por el usuario/escena
+    # completa. El propio pipeline (Gráfico 6) puede reducirlos más abajo
+    # si detecta que el subset es demasiado chico para sostenerlos —
+    # eso no lo decide el usuario, es una corrección automática interna.
+    try:
+        tile_rows = int(os.environ.get("TILE_ROWS", "4"))
+        tile_cols = int(os.environ.get("TILE_COLS", "4"))
+        processors = int(os.environ.get("PROCESSORS", "4"))
+        row_overlap = int(os.environ.get("ROW_OVERLAP", "300"))
+        col_overlap = int(os.environ.get("COL_OVERLAP", "300"))
+        cost_threshold = int(os.environ.get("COST_THRESHOLD", "500"))
+    except ValueError as e:
+        error(f"Uno de los parámetros de tiling no es un entero válido: {e}")
+        sys.exit(1)
 
     # Validar que todas las variables requeridas estén presentes
     required = {
@@ -275,6 +353,10 @@ def collect_inputs():
             sys.exit(1)
 
     ok(f"Configuración cargada correctamente")
+    info(f"Tiling solicitado por el usuario: {tile_rows}x{tile_cols}, "
+         f"overlap {row_overlap}/{col_overlap}, procesadores={processors}, "
+         f"costThreshold={cost_threshold} "
+         f"(puede ajustarse automáticamente si el subset es muy chico)")
     
     return {
         "subset_dim": subset_dim,
@@ -284,6 +366,12 @@ def collect_inputs():
         "import_dir": import_dir,
         "gpt_bin": gpt_bin,
         "snaphu_bin": snaphu_bin,
+        "tile_rows": tile_rows,
+        "tile_cols": tile_cols,
+        "processors": processors,
+        "row_overlap": row_overlap,
+        "col_overlap": col_overlap,
+        "cost_threshold": cost_threshold,
     }
 # =============================================================================
 # PASO 1 – GRÁFICO 5: SNAPHU EXPORT (con validación posterior)
@@ -318,12 +406,12 @@ def run_grafico5(cfg):
       <targetFolder>{snaphu_folder}</targetFolder>
       <statCostMode>DEFO</statCostMode>
       <initMethod>MCF</initMethod>
-      <numberOfTileRows>4</numberOfTileRows>
-      <numberOfTileCols>4</numberOfTileCols>
-      <numberOfProcessors>4</numberOfProcessors>
-      <rowOverlap>300</rowOverlap>
-      <colOverlap>300</colOverlap>
-      <tileCostThreshold>500</tileCostThreshold>
+      <numberOfTileRows>{cfg['tile_rows']}</numberOfTileRows>
+      <numberOfTileCols>{cfg['tile_cols']}</numberOfTileCols>
+      <numberOfProcessors>{cfg['processors']}</numberOfProcessors>
+      <rowOverlap>{cfg['row_overlap']}</rowOverlap>
+      <colOverlap>{cfg['col_overlap']}</colOverlap>
+      <tileCostThreshold>{cfg['cost_threshold']}</tileCostThreshold>
     </parameters>
   </node>
 
@@ -412,6 +500,172 @@ def run_grafico5(cfg):
 # =============================================================================
 # PASO 2 – GRÁFICO 6: SNAPHU UNWRAPPING (con validación previa y posterior)
 # =============================================================================
+# =============================================================================
+# TILING SEGURO: cálculo inicial + reintento adaptativo basado en snaphu
+# =============================================================================
+# Reemplaza el heurístico anterior de "margen fijo 2x" por dos mecanismos
+# complementarios:
+#
+#   1) calcular_tiling_seguro(): a partir del tamaño REAL del subset,
+#      reduce progresivamente NTILEROW/NTILECOL (4→3→2→1) hasta que cada
+#      tile quede holgadamente más grande que el overlap deseado. Esto
+#      evita gastar intentos fallidos en el caso típico (subset chico de
+#      prueba vs. escena completa).
+#   2) ejecutar_snaphu_con_reintento(): la red de seguridad real. No
+#      predice nada — corre snaphu, y SOLO si el propio snaphu devuelve
+#      el error conocido de tiling incompatible, reduce un escalón más
+#      (vía reducir_tiling_un_escalon) y reintenta. Esto cubre cualquier
+#      tamaño "mediano" que la heurística del paso 1 no haya anticipado
+#      bien, sin depender de adivinar un factor de margen exacto.
+def calcular_tiling_seguro(width, height, ntilerow_deseado, ntilecol_deseado,
+                            rowovrlp_deseado, colovrlp_deseado,
+                            min_ratio_tile_overlap=4):
+    """
+    Punto de partida: intenta respetar lo que pidió el usuario/UI
+    (ntilerow_deseado x ntilecol_deseado, con el overlap deseado). Si el
+    subset es demasiado chico para eso, reduce el número de tiles (nunca
+    el overlap primero) hasta que cada tile mida al menos
+    min_ratio_tile_overlap veces el overlap. Si ni con 1x1 alcanza,
+    como último recurso también reduce el overlap.
+    Devuelve (ntilerow, ntilecol, rowovrlp, colovrlp).
+    """
+    n_max = max(ntilerow_deseado, ntilecol_deseado, 1)
+    for n in range(n_max, 0, -1):
+        nr = min(n, ntilerow_deseado) or 1
+        nc = min(n, ntilecol_deseado) or 1
+        tile_h = height // nr
+        tile_w = width // nc
+        if tile_h >= rowovrlp_deseado * min_ratio_tile_overlap and \
+           tile_w >= colovrlp_deseado * min_ratio_tile_overlap:
+            return nr, nc, rowovrlp_deseado, colovrlp_deseado
+
+    # Ni con 1x1 alcanza el overlap deseado: el subset es muy chico incluso
+    # para eso. Se reduce también el overlap, proporcional al lado más chico.
+    overlap_ajustado = max(0, min(width, height) // (min_ratio_tile_overlap * 2))
+    return 1, 1, overlap_ajustado, overlap_ajustado
+
+
+def _leer_tiling_actual(conf_path):
+    with open(conf_path) as f:
+        conf_text = f.read()
+    def _val(clave, default):
+        return next((l.split()[1] for l in conf_text.splitlines()
+                     if l.startswith(clave)), default)
+    return (int(_val("NTILEROW", "1")), int(_val("NTILECOL", "1")),
+            int(_val("ROWOVRLP", "0")), int(_val("COLOVRLP", "0")))
+
+
+def _escribir_tiling(conf_path, ntilerow, ntilecol, rowovrlp, colovrlp):
+    new_lines = []
+    with open(conf_path) as f:
+        for line in f:
+            if line.startswith("NTILEROW"):
+                new_lines.append(f"NTILEROW \t\t{ntilerow}\n")
+            elif line.startswith("NTILECOL"):
+                new_lines.append(f"NTILECOL \t\t{ntilecol}\n")
+            elif line.startswith("ROWOVRLP"):
+                new_lines.append(f"ROWOVRLP \t\t{rowovrlp}\n")
+            elif line.startswith("COLOVRLP"):
+                new_lines.append(f"COLOVRLP \t\t{colovrlp}\n")
+            else:
+                new_lines.append(line)
+    with open(conf_path, "w") as f:
+        f.writelines(new_lines)
+
+
+def reducir_tiling_un_escalon(conf_path):
+    """
+    Reduce un escalón la config de tiling actual del conf: primero baja
+    el número de tiles (manteniendo el overlap), y solo cuando ya está en
+    1x1 empieza a bajar el overlap. Devuelve True si pudo reducir algo,
+    False si ya estaba en el mínimo absoluto (1x1, overlap=0) y no hay
+    nada más que reducir.
+    """
+    ntilerow, ntilecol, rowovrlp, colovrlp = _leer_tiling_actual(conf_path)
+
+    if ntilerow > 1 or ntilecol > 1:
+        nuevo_nr = max(1, ntilerow - 1)
+        nuevo_nc = max(1, ntilecol - 1)
+        warn(f"Reduciendo tiling: {ntilerow}x{ntilecol} → {nuevo_nr}x{nuevo_nc} "
+             f"(overlap se mantiene en {rowovrlp}/{colovrlp}).")
+        _escribir_tiling(conf_path, nuevo_nr, nuevo_nc, rowovrlp, colovrlp)
+        return True
+
+    if rowovrlp > 0 or colovrlp > 0:
+        nuevo_row_ov = rowovrlp // 2
+        nuevo_col_ov = colovrlp // 2
+        warn(f"Ya en 1x1; reduciendo overlap: {rowovrlp}/{colovrlp} → "
+             f"{nuevo_row_ov}/{nuevo_col_ov}.")
+        _escribir_tiling(conf_path, 1, 1, nuevo_row_ov, nuevo_col_ov)
+        return True
+
+    return False  # ya está en el mínimo absoluto (1x1, overlap 0)
+
+
+# Mensajes de snaphu que indican específicamente un problema de tiling
+# (no un error de datos, formato, o config general, que no tiene sentido
+# reintentar reduciendo tiles).
+_ERRORES_TILING_CONOCIDOS = (
+    "tiles too small",
+    "overlap too large",
+    "not enough tiles",
+    "invalid tile",
+)
+
+
+def ejecutar_snaphu_con_reintento(snaphu_bin, conf_path, phase_filename, line_width,
+                                   work_dir, log_path, max_intentos=4):
+    """
+    Corre snaphu. Si falla con un error de tiling conocido, reduce un
+    escalón la config (ver reducir_tiling_un_escalon) y reintenta, hasta
+    max_intentos veces o hasta que ya no se pueda reducir más.
+    Devuelve (exito: bool, output_completo: str, intentos_usados: int).
+    """
+    cmd = [snaphu_bin, "-f", str(conf_path), phase_filename, str(line_width)]
+    output_total = []
+
+    for intento in range(1, max_intentos + 1):
+        info(f"Intento {intento}/{max_intentos} — comando: {' '.join(cmd)}")
+        proc = subprocess.Popen(cmd, cwd=str(work_dir), stdout=subprocess.PIPE,
+                                 stderr=subprocess.STDOUT, text=True)
+        lines_este_intento = []
+        for line in proc.stdout:
+            sys.stdout.write(line)
+            lines_este_intento.append(line)
+        proc.wait()
+        output_este_intento = "".join(lines_este_intento)
+        output_total.append(f"\n--- intento {intento} ---\n{output_este_intento}")
+
+        if proc.returncode == 0:
+            with open(log_path, "w") as log_f:
+                log_f.write("".join(output_total))
+            return True, "".join(output_total), intento
+
+        es_error_tiling = any(msg in output_este_intento.lower()
+                               for msg in _ERRORES_TILING_CONOCIDOS)
+
+        if not es_error_tiling:
+            error(f"snaphu falló con un error que NO es de tiling (código {proc.returncode}). "
+                  f"No tiene sentido reintentar reduciendo tiles — revisa el log.")
+            with open(log_path, "w") as log_f:
+                log_f.write("".join(output_total))
+            return False, "".join(output_total), intento
+
+        warn(f"Intento {intento}: snaphu reportó un error de tiling conocido "
+             f"('tiles too small'/'overlap too large' o similar).")
+        if not reducir_tiling_un_escalon(conf_path):
+            error("Ya se llegó a la config mínima (1x1, overlap 0) y snaphu sigue fallando. "
+                  "El problema ya no es de tiling — probablemente el subset es demasiado "
+                  "chico para el algoritmo de unwrapping en sí (ver nota más abajo).")
+            with open(log_path, "w") as log_f:
+                log_f.write("".join(output_total))
+            return False, "".join(output_total), intento
+
+    with open(log_path, "w") as log_f:
+        log_f.write("".join(output_total))
+    return False, "".join(output_total), max_intentos
+
+
 def run_grafico6(cfg):
     header("GRÁFICO 6 – SNAPHU UNWRAPPING")
 
@@ -427,26 +681,84 @@ def run_grafico6(cfg):
 
     # ── VALIDACIÓN PREVIA: leer ancho desde el conf ──────────────────────
     subheader("Leyendo ancho de línea (LINELENGTH) desde snaphu.conf")
-    line_width = None
     with open(conf_path) as f:
         content = f.read()
+
+    def _ancho_consistente_con_archivo(width):
+        """
+        True si 'width' es compatible con el tamaño real de phase_file
+        (datos FLOAT_DATA de 4 bytes por píxel): el total de floats debe
+        ser múltiplo exacto del ancho. Si no se puede leer el tamaño, se
+        acepta el candidato igual (no hay forma de descartarlo).
+        """
+        if not width:
+            return False
+        try:
+            size = phase_file.stat().st_size
+        except OSError:
+            return True
+        return (size // 4) % width == 0
+
+    # Se recolectan TODOS los candidatos posibles y se valida cada uno
+    # contra el tamaño real del archivo, en vez de confiar ciegamente en
+    # el primero que aparezca (un .hdr viejo de otra corrida, por ejemplo,
+    # podría traer un ancho que ya no corresponde a este subset).
+    candidatos = []
+
+    # 1) LINELENGTH activo en el conf (rara vez SNAP lo escribe así).
     for line in content.splitlines():
         parts = line.split()
         if parts and parts[0] == "LINELENGTH":
             try:
-                line_width = int(parts[1])
-                ok(f"LINELENGTH encontrado en conf: {line_width}")
+                candidatos.append((int(parts[1]), "LINELENGTH en snaphu.conf"))
             except (IndexError, ValueError):
                 pass
 
+    # 2) Header ENVI (.hdr) que SNAP genera junto al .img de fase -- fuente
+    #    confiable porque describe el producto realmente exportado, sea
+    #    cual sea el tamaño del subset/POLYGON usado.
+    hdr_width, hdr_path = _leer_width_desde_hdr(phase_file)
+    if hdr_width is not None:
+        candidatos.append((hdr_width, f".hdr ({hdr_path})"))
+
+    # 3) Comentario con el comando snaphu sugerido, al final de snaphu.conf
+    #    (ej: "# snaphu -f snaphu.conf Phase_x.snaphu.img 6238").
+    comentario_width = _leer_width_desde_comentario_conf(content, phase_file.name)
+    if comentario_width is not None:
+        candidatos.append((comentario_width, "comentario del comando sugerido en snaphu.conf"))
+
+    line_width = None
+    width_source = None
+    for width, fuente in candidatos:
+        if _ancho_consistente_con_archivo(width):
+            line_width, width_source = width, fuente
+            ok(f"Ancho de línea: {width} (fuente: {fuente}) -- consistente con el tamaño de {phase_file.name}.")
+            break
+        else:
+            warn(f"Candidato de ancho {width} (fuente: {fuente}) NO es múltiplo exacto del tamaño "
+                 f"de {phase_file.name} -- se descarta, se prueba la siguiente fuente.")
+
+    if line_width is None and candidatos:
+        # Ninguno pasó la validación de tamaño: se usa el primero encontrado
+        # igual (validate_img_file más abajo lo vuelve a chequear y muestra
+        # el detalle completo si sigue sin cuadrar).
+        line_width, width_source = candidatos[0]
+        warn(f"Ningún candidato pasó la validación de tamaño; se usa el primero encontrado "
+             f"igual ({line_width}, fuente: {width_source}) -- revisa el diagnóstico de abajo.")
+
     if line_width is None:
-        warn("No se encontró LINELENGTH en snaphu.conf.")
+        warn("No se encontró el ancho en LINELENGTH, en el .hdr, ni en el comentario de snaphu.conf.")
         if os.environ.get("NON_INTERACTIVE") == "1":
             line_width = 6041
-            info(f"Modo API: usando LINE_WIDTH por defecto = {line_width}")
+            width_source = "default hardcodeado (6041)"
+            warn(f"Modo API: cayendo al valor por defecto {line_width}. "
+                 f"Esto casi seguro está MAL si el subset no mide lo mismo que la imagen "
+                 f"con la que se probó originalmente -- revisa por qué no se encontró el "
+                 f"header (.hdr) del producto exportado.")
         else:
             lw_str = ask("Introduce el ancho de línea (LINE_WIDTH) manualmente", default="6041")
             line_width = int(lw_str)
+            width_source = "ingresado manualmente"
 
     # ── VALIDACIÓN: inspeccionar binarios Phase y Coherencia ─────────────
     subheader("Validando archivo de FASE")
@@ -525,33 +837,65 @@ def run_grafico6(cfg):
         info(f"NTILEROW={ntilerow} NTILECOL={ntilecol} → un solo tile, sin paralelismo "
              f"(más lento pero siempre estable).")
 
-    # ── Ejecutar snaphu ────────────────────────────────────────────────
-    subheader("Ejecutando snaphu")
+    # ── Cálculo de tiling seguro (punto de partida) ──────────────────────
+    # La config 4x4 + overlap 300 (o la que haya pedido el usuario en la
+    # UI) fue pensada para la ESCENA COMPLETA. Con un subset chico (ej. un
+    # POLYGON de prueba) cada tile queda más chico que el propio overlap.
+    # En vez de solo detectar el problema y caer directo a 1x1, se calcula
+    # el tiling más grande que SÍ entra en el tamaño real del subset —
+    # esto evita gastar reintentos en el caso típico (subset de prueba
+    # chico vs. escena real grande).
+    height = int(phase_diag["rows_as_float32"]) if phase_diag else None
+    if height:
+        nr_seguro, nc_seguro, rov_seguro, cov_seguro = calcular_tiling_seguro(
+            width=line_width, height=height,
+            ntilerow_deseado=int(ntilerow), ntilecol_deseado=int(ntilecol),
+            rowovrlp_deseado=int(rowovrlp), colovrlp_deseado=int(colovrlp),
+        )
+        if (nr_seguro, nc_seguro, rov_seguro, cov_seguro) != (int(ntilerow), int(ntilecol), int(rowovrlp), int(colovrlp)):
+            warn(f"Config de tiling pedida ({ntilerow}x{ntilecol}, overlap {rowovrlp}/{colovrlp}) "
+                 f"no entra en el tamaño real del subset ({line_width}x{height}px). "
+                 f"Ajustada a {nr_seguro}x{nc_seguro}, overlap {rov_seguro}/{cov_seguro} "
+                 f"para esta corrida (no afecta la config guardada para la escena completa).")
+            _escribir_tiling(conf_path, nr_seguro, nc_seguro, rov_seguro, cov_seguro)
+            multi_tile = (nr_seguro > 1 or nc_seguro > 1)
+        else:
+            ok(f"Config de tiling pedida ({ntilerow}x{ntilecol}, overlap {rowovrlp}/{colovrlp}) "
+               f"es compatible con el tamaño real del subset. Se deja sin cambios.")
+
+    # ── Ejecutar snaphu, con reintento automático si falla por tiling ───
+    # Esta es la red de seguridad real: si el cálculo de arriba no fue
+    # suficiente (tamaños "medianos" en zona gris), se deja que snaphu
+    # mismo confirme el fallo con su mensaje de error, y se reduce un
+    # escalón más antes de reintentar — sin depender de adivinar un
+    # margen exacto.
+    subheader("Ejecutando snaphu (con reintento automático si falla por tiling)")
     snaphu_bin = cfg["snaphu_bin"]
-    cmd = [snaphu_bin, "-f", str(conf_path), phase_file.name, str(line_width)]
     info(f"Binario   : {snaphu_bin}")
     info(f"Directorio: {work_dir}")
-    info(f"Comando   : {' '.join(cmd)}")
     print()
 
     log_path = work_dir / "snaphu_unwrapping.log"
-    with open(log_path, "w") as log_f:
-        proc = subprocess.Popen(cmd, cwd=str(work_dir), stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True)
-        for line in proc.stdout:
-            sys.stdout.write(line)
-            log_f.write(line)
-        proc.wait()
+    exito, output, intentos_usados = ejecutar_snaphu_con_reintento(
+        snaphu_bin=snaphu_bin, conf_path=conf_path, phase_filename=phase_file.name,
+        line_width=line_width, work_dir=work_dir, log_path=log_path,
+    )
 
-    if proc.returncode != 0:
-        error(f"snaphu terminó con código {proc.returncode}.")
+    if not exito:
+        error(f"snaphu falló tras {intentos_usados} intento(s).")
         error(f"Log completo en: {log_path}")
         subheader("Últimas líneas del log para diagnóstico rápido")
-        with open(log_path) as f:
-            lines = f.readlines()
-        for l in lines[-15:]:
+        for l in output.splitlines()[-20:]:
             print(f"    {l.rstrip()}")
+        info("Si el subset es de solo unos pocos píxeles de lado, este fallo puede "
+             "deberse a que la imagen es demasiado chica para el algoritmo de "
+             "unwrapping (MCF) en sí, no a la config de tiling — en ese caso hace "
+             "falta un polígono más grande, no más ajuste de parámetros.")
         return False
+
+    if intentos_usados > 1:
+        ok(f"snaphu terminó exitosamente tras reducir el tiling automáticamente "
+           f"({intentos_usados} intentos).")
 
     # ── VALIDACIÓN POSTERIOR: ¿se generó el archivo de salida? ───────────
     subheader("Validando salida de snaphu")

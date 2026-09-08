@@ -8,7 +8,7 @@
       <file>$inputFile</file>
       <copyMetadata>true</copyMetadata>
       <bandNames/>
-      <pixelRegion>0,0,24165,4188</pixelRegion>
+      <pixelRegion/>
       <maskNames/>
     </parameters>
   </node>
@@ -20,9 +20,9 @@
     <parameters class="com.bc.ceres.binding.dom.XppDomElement">
       <sourceBands/>
       <tiePointGrids/>
-      <region>0,0,24165,4188</region>
+      <region/>
       <referenceBand/>
-      <geoRegion/>
+      <geoRegion>$geoRegion</geoRegion>
       <subSamplingX>1</subSamplingX>
       <subSamplingY>1</subSamplingY>
       <fullSwath>false</fullSwath>
@@ -42,7 +42,7 @@
   <applicationData id="Presentation">
     <Description/>
     <node id="Read">
-            <displayPosition x="37.0" y="134.0"/>
+      <displayPosition x="37.0" y="134.0"/>
     </node>
     <node id="Subset">
       <displayPosition x="231.0" y="90.0"/>
