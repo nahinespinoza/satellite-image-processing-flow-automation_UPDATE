@@ -10,9 +10,11 @@ import io
 import tempfile
 import uuid
 import glob
+import shutil
 from pathlib import Path
 import re  
 import json
+import xml.etree.ElementTree as ET
 import numpy as np
 
 app = Flask(__name__)
@@ -72,19 +74,31 @@ PROCESSORS = {
     },
 }
 
-# ==================== PARÁMETROS CONFIGURABLES POR EL USUARIO ====================
-DEFAULT_PARAMS = {
-    "subset_region": "",
-    "snaphu_tile_rows": 4,
-    "snaphu_tile_cols": 4,
-    "snaphu_processors": 4,
-    "snaphu_row_overlap": 300,
-    "snaphu_col_overlap": 300,
-    "snaphu_cost_threshold": 500,
-    "coherence_threshold": 0.3,
-    "displacement_max_m": 2.0,
-    "band_maths_expression": "",
-}
+# Los grafos de los pasos 5-7 también viven en backend/files/ como plantillas
+# (GRAFICO_5a..7d): los scripts de SCRIPTS_DIR las cargan con
+# graph_templates.render_graph y rellenan los ${marcadores} al ejecutar.
+
+
+def _ruta_grafo(file_name):
+    """Ruta absoluta de un grafo .xml dentro de backend/files/; None si el nombre no es válido."""
+    if not file_name or os.path.basename(file_name) != file_name or not file_name.lower().endswith(".xml"):
+        return None
+    return os.path.join(BACKEND_DIR, "files", file_name)
+
+
+def _geo_region_grafo4():
+    """Polígono WKT guardado en GRAFICO_4.xml (se edita desde el editor de grafos); "" si no hay."""
+    try:
+        raiz = ET.parse(os.path.join(BACKEND_DIR, "files", "GRAFICO_4.xml")).getroot()
+    except (OSError, ET.ParseError):
+        return ""
+    el = raiz.find(".//node[@id='Subset']/parameters/geoRegion")
+    valor = (el.text or "").strip() if el is not None else ""
+    return "" if valor.startswith("$") else valor
+
+
+_MSG_SIN_AREA = ("GRAFICO_4 no tiene área de interés: edita el parámetro geoRegion (POLYGON WKT) "
+                 "del Gráfico 4 en el editor de grafos.")
 
 
 def carpeta_para_grafo(graph_path):
@@ -144,6 +158,119 @@ def _generar_preview_individual(dim_path, band_pattern, label):
     except Exception as e:
         return {"status": "error", "message": f"[{label}] no se pudo generar preview: {e}",
                 "output_tiff": None, "band_name": None, "step": label}
+
+# ---------------------------------------------------------------------------
+# Proyectos: carpetas dentro de files/output, cada una con Ascendente/ y
+# Descendente/. Los 3 procesos (individual, flujo completo, batch) guardan
+# sus resultados en <output>/<proyecto>/<órbita>/.
+# ---------------------------------------------------------------------------
+ORBITAS_PROYECTO = ("Ascendente", "Descendente")
+
+
+def _output_root():
+    return os.path.join(BACKEND_DIR, "files", "output")
+
+
+def _validar_nombre_proyecto(nombre):
+    """Devuelve el nombre limpio o lanza ValueError si no sirve como carpeta."""
+    nombre = (nombre or "").strip()
+    if not nombre:
+        raise ValueError("Escribe un nombre para el proyecto.")
+    if len(nombre) > 80:
+        raise ValueError("El nombre del proyecto no puede superar 80 caracteres.")
+    if nombre.startswith(".") or not re.fullmatch(r"[\w\- .()]+", nombre):
+        raise ValueError(
+            "Nombre de proyecto no válido: usa letras, números, espacios, guiones, "
+            "guion bajo, puntos o paréntesis (sin / ni \\, y sin empezar con punto)."
+        )
+    return nombre
+
+
+def _carpeta_proyecto(proyecto, orbita, crear=True):
+    """
+    Ruta absoluta <output>/<proyecto>/<orbita>. Lanza ValueError si el
+    nombre o la órbita no son válidos. Con crear=True asegura que existan
+    las dos subcarpetas de órbita.
+    """
+    proyecto = _validar_nombre_proyecto(proyecto)
+    if orbita not in ORBITAS_PROYECTO:
+        raise ValueError(f"Órbita no válida: '{orbita}'. Usa Ascendente o Descendente.")
+    raiz = os.path.join(_output_root(), proyecto)
+    if crear:
+        for o in ORBITAS_PROYECTO:
+            os.makedirs(os.path.join(raiz, o), exist_ok=True)
+    return os.path.join(raiz, orbita)
+
+
+def _listar_proyectos():
+    raiz = _output_root()
+    proyectos = []
+    if not os.path.isdir(raiz):
+        return proyectos
+    for nombre in sorted(os.listdir(raiz), key=str.lower):
+        ruta = os.path.join(raiz, nombre)
+        if not os.path.isdir(ruta):
+            continue
+        # Solo cuentan como proyecto las carpetas con alguna subcarpeta de órbita
+        # (así no se listan las corridas viejas "AAAAMMDD_AAAAMMDD_completo").
+        if not any(os.path.isdir(os.path.join(ruta, o)) for o in ORBITAS_PROYECTO):
+            continue
+        orbitas = {}
+        for o in ORBITAS_PROYECTO:
+            ruta_o = os.path.join(ruta, o)
+            existe = os.path.isdir(ruta_o)
+            orbitas[o] = {
+                "ruta": ruta_o,
+                "existe": existe,
+                "resultados": len([d for d in os.listdir(ruta_o)
+                                   if os.path.isdir(os.path.join(ruta_o, d))]) if existe else 0,
+            }
+        proyectos.append({"nombre": nombre, "ruta": ruta, "orbitas": orbitas})
+    return proyectos
+
+
+@app.route('/proyectos', methods=['GET'])
+def listar_proyectos():
+    try:
+        return jsonify({"status": "ok", "output_dir": _output_root(),
+                        "orbitas": list(ORBITAS_PROYECTO), "proyectos": _listar_proyectos()})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/proyectos', methods=['POST'])
+def crear_proyecto():
+    """Crea <output>/<nombre>/ con Ascendente/ y Descendente/. Si ya existe, solo completa lo que falte."""
+    try:
+        data = request.json or {}
+        nombre = _validar_nombre_proyecto(data.get("nombre"))
+        ya_existia = os.path.isdir(os.path.join(_output_root(), nombre))
+        _carpeta_proyecto(nombre, ORBITAS_PROYECTO[0], crear=True)
+        print(f"[INFO] Proyecto {'actualizado' if ya_existia else 'creado'}: {nombre}")
+        return jsonify({"status": "ok", "nombre": nombre, "ya_existia": ya_existia,
+                        "proyectos": _listar_proyectos()})
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+def _base_salida_desde_request(data, por_defecto=None):
+    """
+    Carpeta base de salida según la petición:
+      - "proyecto" + "orbita"  -> <output>/<proyecto>/<orbita>
+      - si no, "base_dir"/"output_base" si viene
+      - si no, por_defecto (o <output>)
+    Lanza ValueError si el proyecto/órbita no son válidos.
+    """
+    proyecto = (data.get("proyecto") or "").strip()
+    if proyecto:
+        return _carpeta_proyecto(proyecto, data.get("orbita"), crear=True)
+    otra = data.get("base_dir") or data.get("output_base")
+    if otra:
+        return os.path.abspath(otra)
+    return por_defecto or _output_root()
+
 
 @app.route('/config', methods=['GET'])
 def get_config():
@@ -262,15 +389,9 @@ def procesar():
         output_file = request.json['output']
         user_params = request.json.get('params', {})
 
-        # El Grafo 4 (Subset) necesita el área de interés (geoRegion). Sin
-        # ella el gráfico no se puede recortar y gpt fallaría de todos
-        # modos -- se avisa de una vez en vez de dejar que gpt truene.
         graph_basename_check = os.path.basename(graph)
-        if graph_basename_check == "GRAFICO_4.xml" and not user_params.get("subset_region"):
-            return jsonify({
-                "status": "error",
-                "message": "Debes indicar el área de interés (POLYGON WKT) en los parámetros configurables antes de procesar el Gráfico 4."
-            }), 400
+        if graph_basename_check == "GRAFICO_4.xml" and not _geo_region_grafo4():
+            return jsonify({"status": "error", "message": _MSG_SIN_AREA}), 400
 
         # Convertir a lista si es un solo archivo
         if isinstance(input_data, str):
@@ -369,8 +490,6 @@ def procesar():
         for k, v in user_params.items():
             if v in [None, ""]:
                 continue
-            if k == "subset_region":
-                k = "geoRegion"
             cmd_list.append(f"-P{k}={v}")
 
         result = subprocess.run(cmd_list, capture_output=True, text=True)
@@ -457,15 +576,13 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
     _actualizar_progreso(status="en_progreso", current_step="Iniciando")
 
     # --- Mezclar parámetros del usuario con los por defecto ---
-    user_params = user_params or {}
-    params = {**DEFAULT_PARAMS, **user_params}
-    print(f"[DEBUG] Parámetros efectivos: {params}")
+    # Los parámetros (área, Snaphu, máscara...) viven ahora en los grafos XML.
 
     # Validar ANTES de correr nada: el Paso 4 (Subset) necesita el polygon,
     # y sin él fallaría de todos modos -- mejor avisar de una vez que
     # gastar minutos/horas en los Pasos 1-3 para recién enterarse al final.
-    if not params.get("subset_region"):
-        msg = "Debes indicar el área de interés (POLYGON WKT) en los parámetros configurables."
+    if not _geo_region_grafo4():
+        msg = _MSG_SIN_AREA
         _actualizar_progreso(status="error", current_step="1-4", message=msg)
         return {"status": "error", "step": "1-4", "message": msg, "visualizaciones": visualizaciones_generadas}, 500
 
@@ -591,8 +708,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
                 # --- Paso 4: Subset, recibe la salida de 3 ---
         out4 = ejecutar_grafo(
             "4", out3,
-            os.path.join(output_dir, carpeta_para_grafo(graph_files["4"]), f"{name1}_step_4.dim"),
-            extra_params={"geoRegion": params["subset_region"]}
+            os.path.join(output_dir, carpeta_para_grafo(graph_files["4"]), f"{name1}_step_4.dim")
         )
         _exportar_viz("Paso 4", out4, "Phase", "paso4_Phase.tif")
 
@@ -621,16 +737,6 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         env["SNAPHU_BIN"] = SNAPHU_BIN
         env["NON_INTERACTIVE"] = "1"
 
-        # Parámetros configurables del usuario
-        env["SNAPHU_TILE_ROWS"] = str(params["snaphu_tile_rows"])
-        env["SNAPHU_TILE_COLS"] = str(params["snaphu_tile_cols"])
-        env["SNAPHU_PROCESSORS"] = str(params["snaphu_processors"])
-        env["SNAPHU_ROW_OVERLAP"] = str(params["snaphu_row_overlap"])
-        env["SNAPHU_COL_OVERLAP"] = str(params["snaphu_col_overlap"])
-        env["SNAPHU_COST_THRESHOLD"] = str(params["snaphu_cost_threshold"])
-        env["COHERENCE_THRESHOLD"] = str(params["coherence_threshold"])
-        env["DISPLACEMENT_MAX_M"] = str(params["displacement_max_m"])
-        env["BAND_MATHS_EXPRESSION"] = str(params.get("band_maths_expression", ""))
 
         # Determinar script y variables según el paso
         script_path = None
@@ -850,6 +956,8 @@ def nueva_carpeta_salida():
     {
       "inputs": ["archivo_master.zip", "archivo_slave.zip"],
       "base_dir": "/ruta/opcional",   <-- opcional, default: backend/files/output
+      "proyecto": "MiProyecto",       <-- opcional: guarda en output/<proyecto>/<orbita>
+      "orbita": "Ascendente",         <-- requerido si viene proyecto (Ascendente|Descendente)
       "sufijo": "individual"          <-- opcional, default: "individual"
     }
     Devuelve: {"status": "ok", "output_dir": "<ruta absoluta creada>"}
@@ -870,7 +978,11 @@ def nueva_carpeta_salida():
             }), 400
 
         backend_dir = os.path.dirname(os.path.abspath(__file__))
-        base_dir = os.path.abspath(base_dir) if base_dir else os.path.join(backend_dir, "files", "output")
+        try:
+            base_dir = _base_salida_desde_request(data)
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+        os.makedirs(base_dir, exist_ok=True)
 
         absolute_input_files = []
         for f in input_files:
@@ -902,6 +1014,8 @@ def procesar_flujo():
     {
       "inputs": ["archivo1.zip", "archivo2.dim"],
       "output_dir": "C:/ruta/salida/",
+      "carpeta_definitiva": true,   <-- OPCIONAL: output_dir ya viene de
+                                        /nueva_carpeta_salida, se usa tal cual
       "params": { ... }   <-- OPCIONAL
     }
     """
@@ -909,6 +1023,7 @@ def procesar_flujo():
         data = request.json
         input_files = data.get('inputs', [])
         output_dir = data['output_dir']
+        carpeta_definitiva = bool(data.get('carpeta_definitiva'))
         user_params = data.get('params', {})
 
         if not input_files:
@@ -973,10 +1088,16 @@ def procesar_flujo():
         # nombre descriptivo con las fechas master/slave; si ya existe una carpeta con
         # ese nombre (mismo par de fechas, sea con el mismo subset o uno distinto), se
         # agrega un sufijo "(1)", "(2)", ... para no perder la corrida anterior.
+        # Si el frontend ya pidió la carpeta con /nueva_carpeta_salida
+        # (carpeta_definitiva), se usa tal cual: es la misma ruta donde hace
+        # polling de progreso.json para mostrar cada preview al terminar su paso.
         output_dir_recibido = os.path.abspath(output_dir)
-        carpeta_padre = os.path.dirname(output_dir_recibido) or output_dir_recibido
-        nombre_deseado = _nombre_carpeta_corrida(absolute_input_files, sufijo="completo")
-        output_dir = _carpeta_salida_unica(os.path.join(carpeta_padre, nombre_deseado))
+        if carpeta_definitiva:
+            output_dir = output_dir_recibido
+        else:
+            carpeta_padre = os.path.dirname(output_dir_recibido) or output_dir_recibido
+            nombre_deseado = _nombre_carpeta_corrida(absolute_input_files, sufijo="completo")
+            output_dir = _carpeta_salida_unica(os.path.join(carpeta_padre, nombre_deseado))
         os.makedirs(output_dir, exist_ok=True)
         print(f"[INFO] output_dir recibido: {output_dir_recibido} -> carpeta final de esta corrida: {output_dir}")
 
@@ -1211,12 +1332,23 @@ def procesar_flujo_batch_auto():
     {
       "main_folder": "/ruta/a/Carpeta_main",
       "dias_esperados": 12,   <-- OPCIONAL, por defecto 12
+      "proyecto": "MiProyecto", <-- OPCIONAL: salida en output/<proyecto>/<orbita>/
+      "orbita": "Ascendente",   <-- requerido si viene proyecto
       "params": { ... }       <-- OPCIONAL
     }
+
+    Sin proyecto, cada par se guarda en output/<fecha1>_<fecha2>/.
+    Si la carpeta del par ya existe se usa "<fecha1>_<fecha2> (1)", (2), ...
+    para no sobreescribir corridas anteriores.
     """
     try:
         data = request.json
         main_folder = data.get('main_folder')
+        try:
+            output_base = _base_salida_desde_request(data)
+        except ValueError as e:
+            return jsonify({"status": "error", "message": str(e)}), 400
+        os.makedirs(output_base, exist_ok=True)
         dias_esperados = int(data.get('dias_esperados', 12))
         user_params = data.get('params', {})
 
@@ -1299,8 +1431,9 @@ def procesar_flujo_batch_auto():
             fecha1 = _extraer_fecha_sentinel(imagen1)
             fecha2 = _extraer_fecha_sentinel(imagen2)
             folder_name = f"{fecha1.strftime('%Y%m%d')}_{fecha2.strftime('%Y%m%d')}"
-            pair_output_dir = os.path.join(main_folder, folder_name)
+            pair_output_dir = _carpeta_salida_unica(os.path.join(output_base, folder_name))
             os.makedirs(pair_output_dir, exist_ok=True)
+            folder_name = os.path.basename(pair_output_dir)
 
             print(f"\n{'=' * 60}\n[BATCH-AUTO] Procesando par: {folder_name}\n{'=' * 60}")
             print(f"[BATCH-AUTO] Imagen 1 (master): {imagen1}")
@@ -1338,6 +1471,7 @@ def procesar_flujo_batch_auto():
         return jsonify({
             "status": status_general,
             "main_folder": main_folder,
+            "output_base": output_base,
             "total_imagenes": len(imagenes),
             "total_pares": len(pares),
             "exitosos": exitosos,
@@ -1356,12 +1490,14 @@ def procesar_flujo_batch_auto():
 @app.route('/guardar-graph', methods=['POST'])
 def guardar_graph():
     """
-    Guarda un archivo XML modificado dentro de backend/files/
-    Espera un JSON:
+    Guarda un grafo .xml dentro de backend/files/ (incluidas las plantillas de
+    los pasos 5-7). Espera un JSON:
     {
        "file_name": "GRAFICO_1.xml",
        "content": "<graph>...</graph>"
     }
+    La primera vez que se modifica un archivo existente se conserva el original
+    como <nombre>.orig (lo usa "Resetear a default").
     """
     try:
         data = request.json
@@ -1371,14 +1507,15 @@ def guardar_graph():
         if not file_name or not content:
             return jsonify({"status": "error", "message": "file_name y content son requeridos"}), 400
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
-        graph_path = os.path.join(backend_dir, "files", file_name)
-
-        # Validar extensión
-        if not file_name.lower().endswith(".xml"):
+        graph_path = _ruta_grafo(file_name)
+        if graph_path is None:
             return jsonify({"status": "error", "message": "Solo se permiten archivos .xml"}), 400
-        
-        # Guardar archivo
+
+        # Primera vez que se modifica: conservar el original como <nombre>.orig
+        orig_path = graph_path + ".orig"
+        if os.path.exists(graph_path) and not os.path.exists(orig_path):
+            shutil.copyfile(graph_path, orig_path)
+
         with open(graph_path, "w", encoding="utf-8") as f:
             f.write(content)
 
@@ -1387,7 +1524,73 @@ def guardar_graph():
             "message": "Archivo guardado correctamente",
             "path": graph_path
         })
-    
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/listar-graphs', methods=['GET'])
+def listar_graphs():
+    """Lista los grafos .xml de backend/files/ (pasos 1-7 y personalizados)."""
+    try:
+        files_dir = os.path.join(BACKEND_DIR, "files")
+        nombres = sorted(
+            n for n in os.listdir(files_dir)
+            if n.lower().endswith(".xml") and os.path.isfile(os.path.join(files_dir, n))
+        ) if os.path.isdir(files_dir) else []
+        return jsonify({"status": "ok", "graphs": nombres})
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/leer-graph', methods=['GET'])
+def leer_graph():
+    """
+    Devuelve el contenido de un grafo .xml de backend/files/.
+    Query: ?file_name=GRAFICO_1.xml[&original=1]
+    Con original=1 devuelve la copia original (.orig) si existe, si no el actual.
+    """
+    try:
+        file_name = request.args.get("file_name", "")
+        graph_path = _ruta_grafo(file_name)
+        if graph_path is None:
+            return jsonify({"status": "error", "message": "file_name debe ser un .xml de backend/files/"}), 400
+        if request.args.get("original") == "1" and os.path.exists(graph_path + ".orig"):
+            graph_path += ".orig"
+
+        if not os.path.exists(graph_path):
+            return jsonify({"status": "error", "message": f"No existe {file_name}"}), 404
+
+        with open(graph_path, "r", encoding="utf-8") as f:
+            return jsonify({"status": "ok", "file_name": file_name, "content": f.read()})
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/subir-imagen', methods=['POST'])
+def subir_imagen():
+    """
+    Sube una imagen satelital (.zip / .dim) a backend/files/images CONSERVANDO
+    su nombre, porque /procesar y /procesar_flujo resuelven las entradas por nombre.
+    Devuelve {"status": "ok", "name": "<nombre guardado>"}.
+    """
+    try:
+        f = request.files.get('file')
+        if f is None or f.filename == '':
+            return jsonify({"status": "error", "message": "No se proporcionó archivo"}), 400
+
+        name = os.path.basename(f.filename)
+        if not name.lower().endswith((".zip", ".dim")):
+            return jsonify({"status": "error", "message": "Solo se aceptan .zip o .dim"}), 400
+
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        images_dir = os.path.join(backend_dir, 'files', 'images')
+        os.makedirs(images_dir, exist_ok=True)
+        f.save(os.path.join(images_dir, name))
+
+        return jsonify({"status": "ok", "name": name})
+
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
@@ -1498,6 +1701,44 @@ def serve_temp_converted(filename):
         return send_file(file_path, mimetype='image/png')
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@app.route('/info-archivo-path', methods=['GET'])
+def info_archivo_path():
+    """
+    Información básica de un archivo a partir de su ruta absoluta (la usa el
+    panel de información del mapa). Para GeoTIFF agrega dimensiones, bandas,
+    tipo de dato y CRS leídos con rasterio.
+
+    Uso: GET /info-archivo-path?path=/ruta/absoluta/al/archivo.tif
+    """
+    path = request.args.get('path')
+    if not path:
+        return jsonify({"status": "error", "message": "path es requerido"}), 400
+    path = os.path.abspath(path)
+    if not os.path.isfile(path):
+        return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
+
+    stat = os.stat(path)
+    file_info = {
+        "nombre": os.path.basename(path),
+        "tamaño_mb": round(stat.st_size / (1024 * 1024), 2),
+        "modificado": datetime.fromtimestamp(stat.st_mtime).isoformat(timespec="seconds"),
+        "extensión": os.path.splitext(path)[1].lower(),
+    }
+    if path.lower().endswith(('.tif', '.tiff')):
+        try:
+            import rasterio
+            with rasterio.open(path) as src:
+                file_info["dimensiones"] = f"{src.width} x {src.height}"
+                file_info["bandas"] = src.count
+                file_info["tipo_dato"] = src.dtypes[0] if src.dtypes else None
+                file_info["crs"] = src.crs.to_string() if src.crs else None
+                if src.nodata is not None:
+                    file_info["nodata"] = src.nodata
+        except Exception as e:
+            file_info["aviso"] = f"No se pudieron leer los metadatos raster: {e}"
+    return jsonify({"status": "ok", "file_info": file_info})
 
 
 @app.route('/download/<folder>/<path:filename>', methods=['GET'])
@@ -2229,7 +2470,8 @@ def productos_visualizables():
 
         # Patrón de carpeta de par generada por /procesar_flujo_batch_auto,
         # ej. "20260509_20260521/Grafo 1 - Orbit/paso1_master_preview.tif"
-        _PAR_RE = re.compile(r'^(\d{8})_(\d{8})')
+        # Puede estar en cualquier nivel (ej. "Proyecto/Ascendente/20260509_20260521/...").
+        _PAR_RE = re.compile(r'(?:^|/)(\d{8})_(\d{8})')
 
         productos = []
         seen = set()
@@ -2260,7 +2502,7 @@ def productos_visualizables():
             # Si el .tif vive dentro de una carpeta de par "AAAAMMDD_AAAAMMDD"
             # (generada por /procesar_flujo_batch_auto), extraemos esa info
             # para poder agrupar/ordenar/filtrar por par en el frontend.
-            par_match = _PAR_RE.match(step_label)
+            par_match = _PAR_RE.search(step_label)
             if par_match:
                 par = f"{par_match.group(1)}_{par_match.group(2)}"
                 fecha1 = f"{par_match.group(1)[:4]}-{par_match.group(1)[4:6]}-{par_match.group(1)[6:]}"
@@ -2341,7 +2583,9 @@ def convert_image_upload():
                 out_f.write(buf.getbuffer())
 
             image_url = f"/files/temp/converted/{out_name}"
-            return jsonify({"status": "ok", "image_url": image_url})
+            # "path" = TIFF original en el servidor, para que el mapa pueda
+            # georreferenciarlo (/geo-info-path) y leer píxeles (/pixel-value).
+            return jsonify({"status": "ok", "image_url": image_url, "path": temp_path})
         except ConversionError as ce:
             return jsonify(ce.to_dict()), 422
         except Exception as e:
@@ -2371,7 +2615,7 @@ def files_upload():
         f.save(out_path)
 
         image_url = f"/files/images/{safe_name}"
-        return jsonify({"status": "ok", "image_url": image_url})
+        return jsonify({"status": "ok", "image_url": image_url, "path": out_path})
 
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
@@ -2389,7 +2633,6 @@ def procesar_paso():
         base_output_dir = data.get('output_dir')
         input_from_user = data.get('input')
         user_params = data.get('params', {})
-        params = {**DEFAULT_PARAMS, **user_params}
 
         if not step or not base_output_dir:
             return jsonify({"status": "error", "message": "step y output_dir son requeridos"}), 400
@@ -2405,15 +2648,6 @@ def procesar_paso():
         env["SNAPHU_BIN"] = SNAPHU_BIN
 
         # Parámetros configurables del usuario (se inyectan como variables de entorno)
-        env["SNAPHU_TILE_ROWS"] = str(params["snaphu_tile_rows"])
-        env["SNAPHU_TILE_COLS"] = str(params["snaphu_tile_cols"])
-        env["SNAPHU_PROCESSORS"] = str(params["snaphu_processors"])
-        env["SNAPHU_ROW_OVERLAP"] = str(params["snaphu_row_overlap"])
-        env["SNAPHU_COL_OVERLAP"] = str(params["snaphu_col_overlap"])
-        env["SNAPHU_COST_THRESHOLD"] = str(params["snaphu_cost_threshold"])
-        env["COHERENCE_THRESHOLD"] = str(params["coherence_threshold"])
-        env["DISPLACEMENT_MAX_M"] = str(params["displacement_max_m"])
-        env["BAND_MATHS_EXPRESSION"] = str(params.get("band_maths_expression", ""))
 
         script_path = None
 

@@ -1,0 +1,46 @@
+<graph id="Graph">
+  <version>1.0</version>
+
+  <node id="Read-Reference">
+    <operator>Read</operator>
+    <sources/>
+    <parameters>
+      <file>${inputFile}</file>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="Read-Secondary">
+    <operator>Read</operator>
+    <sources/>
+    <parameters>
+      <file>${inputFile2}</file>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="Collocate">
+    <operator>Collocate</operator>
+    <sources>
+      <reference refid="Read-Reference"/>
+      <secondary refid="Read-Secondary"/>
+    </sources>
+    <parameters>
+      <resamplingType>NEAREST_NEIGHBOUR</resamplingType>
+      <renameReferenceComponents>true</renameReferenceComponents>
+      <renameSecondaryComponents>true</renameSecondaryComponents>
+    </parameters>
+  </node>
+
+  <node id="Write">
+    <operator>Write</operator>
+    <sources>
+      <sourceProduct refid="Collocate"/>
+    </sources>
+    <parameters>
+      <file>${outputFile}</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+
+</graph>

@@ -1,0 +1,43 @@
+<graph id="Graph">
+  <version>1.0</version>
+
+  <node id="Read">
+    <operator>Read</operator>
+    <sources/>
+    <parameters>
+      <file>${inputFile}</file>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="BandMaths">
+    <operator>BandMaths</operator>
+    <sources>
+      <sourceProduct refid="Read"/>
+    </sources>
+    <parameters>
+      <targetBands>
+        <targetBand>
+          <name>displacement_masked</name>
+          <type>float32</type>
+          <expression>if (${coherenceBand} &gt; 0.3 and ${displacementBand} &gt;= -2 and ${displacementBand} &lt;= 2) then ${displacementBand} else 0</expression>
+          <description>Desplazamiento con mascara de coherencia (umbral 0.3), segun manual.</description>
+          <unit>m</unit>
+          <noDataValue>NaN</noDataValue>
+        </targetBand>
+      </targetBands>
+    </parameters>
+  </node>
+
+  <node id="Write">
+    <operator>Write</operator>
+    <sources>
+      <sourceProduct refid="BandMaths"/>
+    </sources>
+    <parameters>
+      <file>${outputFile}</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+
+</graph>

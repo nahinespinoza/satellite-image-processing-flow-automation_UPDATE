@@ -1100,6 +1100,44 @@ gpt graph.xml \
     -Pparam2=valor2
 ```
 
+## Editor de Gráficos y Catálogo de Parámetros de SNAP
+
+El editor de grafos (`GraphWorkflowEditor.jsx`) permite configurar los parámetros de cada nodo desde un formulario, sin editar el XML a mano. El tipo de campo, las listas de opciones y la ayuda de cada parámetro salen de un **catálogo** generado a partir de SNAP.
+
+### Catálogo: `frontend/src/snap_operators.json`
+
+Lo genera `Scripts_Automatizacion_Snaphu/generar_catalogo_snap.py`, que ejecuta `gpt <operador> -h` por cada operador y guarda, para cada parámetro: tipo, descripción oficial, valor por defecto, valores permitidos, intervalo válido y si es obligatorio.
+
+```bash
+# Operadores usados en backend/files/GRAFICO_*.xml
+python3 Scripts_Automatizacion_Snaphu/generar_catalogo_snap.py
+
+# Más operadores que no estén en los gráficos
+python3 Scripts_Automatizacion_Snaphu/generar_catalogo_snap.py Calibration Speckle-Filter
+```
+
+- Tarda unos 20 segundos. `GPT_BIN`, `GRAPHS_DIR` y `CATALOGO_SALIDA` se pueden cambiar por variable de entorno.
+- Se debe volver a ejecutar al **actualizar SNAP** o al **agregar un gráfico con un operador nuevo**.
+- El catálogo guarda la versión de SNAP con la que se generó (`snapVersion`).
+
+### Qué muestra el formulario
+
+| Elemento | Origen |
+|---|---|
+| Desplegable cerrado | parámetros con lista de valores en SNAP (p. ej. `orbitType`, `orbitDegree`) |
+| Interruptor / campo numérico | tipo del parámetro en SNAP |
+| Ayuda al pasar el mouse | descripción, valor por defecto e intervalo de SNAP |
+| **Más parámetros de SNAP (n)** | parámetros que SNAP define para el operador y el XML no contiene; con **+** se agregan con su valor por defecto y en el orden en que SNAP los escribe |
+| Valores bloqueados (`${inputFile}`, …) | los sustituye el backend al ejecutar |
+
+`KNOWN_VALUES` (en el propio componente) queda como respaldo para sugerencias que SNAP no da como lista cerrada, como `demName` o `formatName`.
+
+### Limitaciones conocidas
+
+- **Más completo que el Graph Builder de escritorio:** el catálogo contiene *todos* los parámetros que acepta cada operador. El Graph Builder de SNAP muestra solo una parte en cada pantalla (por ejemplo, Write no muestra `deleteOutputOnFailure`, `writeEntireTileRows` ni `clearCacheAfterRowWrite`). "Más parámetros de SNAP" no distingue entre parámetros básicos y avanzados.
+- **Solo operadores del catálogo:** si un nodo usa un operador que no está en `snap_operators.json`, ese nodo no muestra desplegables, ayuda ni "Más parámetros de SNAP". Solución: regenerar el catálogo incluyendo ese operador (ver arriba). No hay botón para escribir parámetros a mano en el formulario; para casos especiales se usa la vista **XML**.
+- **Parámetros anidados** (p. ej. `targetBands` y `variables` de BandMaths, que contienen nombre, tipo, unidad y expresión) no se editan en el formulario, solo en la vista **XML**.
+
 ## Validación de Gráficos
 
 ```bash

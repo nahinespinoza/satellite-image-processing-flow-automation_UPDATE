@@ -113,12 +113,14 @@ export default function Visualizador() {
   };
 
   useEffect(() => {
-    if (imageContainerRef.current) {
-      imageContainerRef.current.addEventListener("wheel", handleWheel, { passive: false });
+    const container = imageContainerRef.current;
+    if (container) {
+      container.addEventListener("wheel", handleWheel, { passive: false });
       return () => {
-        imageContainerRef.current?.removeEventListener("wheel", handleWheel);
+        container.removeEventListener("wheel", handleWheel);
       };
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageUrl, zoom]);
 
   // Resumen de TIFFs por carpeta (input / output)
@@ -527,6 +529,7 @@ export default function Visualizador() {
   // ================================
   // Diagnóstico del backend
   // ================================
+  // eslint-disable-next-line no-unused-vars
   const testBackendConnection = async () => {
     try {
       setError(null);

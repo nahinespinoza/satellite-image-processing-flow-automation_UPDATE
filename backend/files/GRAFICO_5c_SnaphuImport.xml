@@ -1,0 +1,44 @@
+<graph id="Graph">
+  <version>1.0</version>
+
+  <node id="Read">
+    <operator>Read</operator>
+    <sources/>
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <file>${inputFile}</file>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="ReadUnwrapped">
+    <operator>Read</operator>
+    <sources/>
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <file>${unwrappedFile}</file>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="SnaphuImport">
+    <operator>SnaphuImport</operator>
+    <sources>
+      <sourceProduct refid="Read"/>
+      <sourceProduct2 refid="ReadUnwrapped"/>
+    </sources>
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <doNotKeepWrapped>false</doNotKeepWrapped>
+    </parameters>
+  </node>
+
+  <node id="Write">
+    <operator>Write</operator>
+    <sources>
+      <sourceProduct refid="SnaphuImport"/>
+    </sources>
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <file>${outputFile}</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+
+</graph>

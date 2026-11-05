@@ -6,7 +6,7 @@ import ParameterPanel from "./ParameterPanel";
 export default function GraphEditor() {
   const [xmlText, setXmlText] = useState("");
   const [fileName, setFileName] = useState("");
-  const [xmlFiles, setXmlFiles] = useState([]);
+  const [, setXmlFiles] = useState([]);
   const [showSavedModal, setShowSavedModal] = useState(false);
   const textareaRef = React.useRef(null);
 

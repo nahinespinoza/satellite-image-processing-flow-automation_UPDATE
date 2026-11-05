@@ -3,6 +3,8 @@ import subprocess
 from pathlib import Path
 import os
 
+from graph_templates import render_graph
+
 # =============================================================================
 # CONFIGURACIÓN
 # =============================================================================
@@ -33,34 +35,11 @@ print(f"[INFO] Output: {OUTPUT_DIM}")
 # =============================================================================
 # Grafo XML
 # =============================================================================
-xml_content = f"""<graph id="Graph">
-  <version>1.0</version>
-  <node id="Read">
-    <operator>Read</operator>
-    <parameters>
-      <file>{INPUT_DIM}</file>
-    </parameters>
-  </node>
-  
-  <node id="PhaseToDisplacement">
-    <operator>PhaseToDisplacement</operator>
-    <sources>
-      <sourceProduct refid="Read"/>
-    </sources>
-  </node>
-  
-    <node id="Write">
-    <operator>Write</operator>
-    <sources>
-      <sourceProduct refid="PhaseToDisplacement"/>
-    </sources>
-    <parameters>
-      <file>{OUTPUT_DIM}</file>
-      <formatName>BEAM-DIMAP</formatName>
-    </parameters>
-  </node>
-</graph>
-"""
+xml_content = render_graph(
+    "GRAFICO_6_PhaseToDisplacement.xml",
+    inputFile=INPUT_DIM,
+    outputFile=OUTPUT_DIM,
+)
 
 graph_path = OUTPUT_FOLDER / "PhaseToDisplacement_auto.xml"
 graph_path.write_text(xml_content, encoding="utf-8")

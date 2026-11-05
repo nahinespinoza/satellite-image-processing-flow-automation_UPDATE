@@ -22,10 +22,11 @@
       <tiePointGrids/>
       <region/>
       <referenceBand/>
-      <geoRegion>$geoRegion</geoRegion>
+      <geoRegion>POLYGON((-78.65 -2.68,-78.55 -2.68,-78.55 -2.58,-78.65 -2.58,-78.65 -2.68))</geoRegion>
       <subSamplingX>1</subSamplingX>
       <subSamplingY>1</subSamplingY>
       <fullSwath>false</fullSwath>
+      <polygonRegion/>
       <copyMetadata>true</copyMetadata>
     </parameters>
   </node>

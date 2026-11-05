@@ -1,0 +1,31 @@
+<graph id="Graph">
+  <version>1.0</version>
+
+  <node id="Read">
+    <operator>Read</operator>
+    <sources/>
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <file>${inputFile}</file>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="SnaphuExport">
+    <operator>SnaphuExport</operator>
+    <sources>
+      <sourceProduct refid="Read"/>
+    </sources>
+    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
+      <targetFolder>${targetFolder}</targetFolder>
+      <statCostMode>DEFO</statCostMode>
+      <initMethod>MCF</initMethod>
+      <numberOfTileRows>4</numberOfTileRows>
+      <numberOfTileCols>4</numberOfTileCols>
+      <numberOfProcessors>4</numberOfProcessors>
+      <rowOverlap>300</rowOverlap>
+      <colOverlap>300</colOverlap>
+      <tileCostThreshold>500</tileCostThreshold>
+    </parameters>
+  </node>
+
+</graph>

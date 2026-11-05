@@ -586,3 +586,78 @@ html,
     overflow: visible;
   }
 }
+
+/* ===== Selector de proyecto (SelectorProyecto.jsx) ===== */
+.sp-box {
+  margin-bottom: 12px;
+}
+.sp-row {
+  display: flex;
+  gap: 6px;
+  align-items: stretch;
+}
+.sp-row select,
+.sp-row input {
+  flex: 1;
+  min-width: 0;
+}
+.sp-btn {
+  width: auto;
+  margin: 0;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid #c7cbe8;
+  background: #fff;
+  color: #4c51bf;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sp-btn:hover:not(:disabled) {
+  background: #eef0ff;
+}
+.sp-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sp-btn-primary {
+  background: #667eea;
+  border-color: #667eea;
+  color: #fff;
+}
+.sp-btn-primary:hover:not(:disabled) {
+  background: #5a67d8;
+}
+.sp-btn-ghost {
+  color: #666;
+  border-color: #ddd;
+}
+.sp-orbita {
+  flex: 1;
+  color: #444;
+  border-color: #ccc;
+}
+.sp-orbita-on,
+.sp-orbita-on:hover:not(:disabled) {
+  background: #667eea;
+  border-color: #667eea;
+  color: #fff;
+}
+.sp-hint,
+.sp-destino,
+.sp-error {
+  margin: 2px 0 0;
+  font-size: 11px;
+  line-height: 1.4;
+}
+.sp-hint {
+  color: #888;
+}
+.sp-destino {
+  color: #555;
+  word-break: break-all;
+}
+.sp-error {
+  color: #c62828;
+}

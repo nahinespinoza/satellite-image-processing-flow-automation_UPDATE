@@ -1,0 +1,2012 @@
+{
+  "generatedAt": "2026-10-27T10:18:12",
+  "snapVersion": "13.0.0",
+  "source": "gpt <operador> -h",
+  "operators": {
+    "Read": {
+      "description": "Reads a data product from a given file location.",
+      "parameters": {
+        "file": {
+          "name": "file",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": "The file from which the data product is read. Value must not be empty.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": true,
+          "structured": false
+        },
+        "formatName": {
+          "name": "formatName",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "An (optional) format name. Value must not be empty.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "sourceBands": {
+          "name": "sourceBands",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of source bands.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "sourceMasks": {
+          "name": "sourceMasks",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of source masks.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "pixelRegion": {
+          "name": "pixelRegion",
+          "type": "rectangle",
+          "javaType": "rectangle",
+          "list": false,
+          "description": "The subset region in pixel coordinates. Use the following format: {x>,{y>,{width>,{height> If not given, the entire scene is used. The 'geoRegion' parameter has precedence over this parameter.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "geometryRegion": {
+          "name": "geometryRegion",
+          "type": "geometry",
+          "javaType": "geometry",
+          "list": false,
+          "description": "The subset region in geographical coordinates using WKT-format, e.g. POLYGON(({lon1} {lat1}, {lon2} {lat2}, ..., {lon1} {lat1})) (make sure to quote the option due to spaces in {geometry}). If not given, the entire scene is used.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "vectorFile": {
+          "name": "vectorFile",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": "The file from which the polygon is read.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "polygonRegion": {
+          "name": "polygonRegion",
+          "type": "polygon",
+          "javaType": "polygon",
+          "list": false,
+          "description": "The subset region in geographical coordinates using WKT-format, e.g. POLYGON(({lon1} {lat1}, {lon2} {lat2}, ..., {lon1} {lat1})) If not given, the geometryRegion or pixelRegion is used.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "useAdvancedOptions": {
+          "name": "useAdvancedOptions",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Whether to use advanced options for reading of the source product.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "copyMetadata": {
+          "name": "copyMetadata",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Whether to copy the metadata of the source product.",
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "TOPSAR-Split": {
+      "description": "Creates a new product with only the selected subswath",
+      "parameters": {
+        "subswath": {
+          "name": "subswath",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The list of source bands.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "selectedPolarisations": {
+          "name": "selectedPolarisations",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of polarisations",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "firstBurstIndex": {
+          "name": "firstBurstIndex",
+          "type": "int",
+          "javaType": "integer",
+          "list": false,
+          "description": "The first burst index",
+          "default": "1",
+          "values": null,
+          "interval": "[1, *)",
+          "mandatory": false,
+          "structured": false
+        },
+        "lastBurstIndex": {
+          "name": "lastBurstIndex",
+          "type": "int",
+          "javaType": "integer",
+          "list": false,
+          "description": "The last burst index",
+          "default": "9999",
+          "values": null,
+          "interval": "[1, *)",
+          "mandatory": false,
+          "structured": false
+        },
+        "wktAoi": {
+          "name": "wktAoi",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "WKT polygon to be used for selecting bursts",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Apply-Orbit-File": {
+      "description": "Apply orbit file",
+      "parameters": {
+        "orbitType": {
+          "name": "orbitType",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "Sentinel Precise (Auto Download)",
+          "values": [
+            "Sentinel Precise (Auto Download)",
+            "Sentinel Restituted (Auto Download)",
+            "DORIS Preliminary POR (ENVISAT)",
+            "DORIS Precise VOR (ENVISAT) (Auto Download)",
+            "DELFT Precise (ENVISAT, ERS1&2) (Auto Download)",
+            "PRARE Precise (ERS1&2) (Auto Download)",
+            "Kompsat5 Precise"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "polyDegree": {
+          "name": "polyDegree",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": null,
+          "default": "3",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "continueOnFail": {
+          "name": "continueOnFail",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Write": {
+      "description": "Writes a data product to a file.",
+      "parameters": {
+        "file": {
+          "name": "file",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": "The output file to which the data product is written.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "formatName": {
+          "name": "formatName",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The name of the output file format.",
+          "default": "BEAM-DIMAP",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "deleteOutputOnFailure": {
+          "name": "deleteOutputOnFailure",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "If true, all output files are deleted after a failed write operation.",
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "writeEntireTileRows": {
+          "name": "writeEntireTileRows",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "If true, the write operation waits until an entire tile row is computed.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "clearCacheAfterRowWrite": {
+          "name": "clearCacheAfterRowWrite",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "If true, the internal tile cache is cleared after a tile row has been written. Ignored if writeEntireTileRows=false.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Back-Geocoding": {
+      "description": "Bursts co-registration using orbit and DEM",
+      "parameters": {
+        "demName": {
+          "name": "demName",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The digital elevation model.",
+          "default": "SRTM 3Sec",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "demResamplingMethod": {
+          "name": "demResamplingMethod",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "BICUBIC_INTERPOLATION",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMFile": {
+          "name": "externalDEMFile",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": null,
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMNoDataValue": {
+          "name": "externalDEMNoDataValue",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": null,
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "resamplingType": {
+          "name": "resamplingType",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The method to be used when resampling the slave grid onto the master grid.",
+          "default": "BISINC_5_POINT_INTERPOLATION",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "maskOutAreaWithoutElevation": {
+          "name": "maskOutAreaWithoutElevation",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputRangeAzimuthOffset": {
+          "name": "outputRangeAzimuthOffset",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputDerampDemodPhase": {
+          "name": "outputDerampDemodPhase",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "disableReramp": {
+          "name": "disableReramp",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Enhanced-Spectral-Diversity": {
+      "description": "Estimate constant range and azimuth offsets for a stack of images",
+      "parameters": {
+        "fineWinWidthStr": {
+          "name": "fineWinWidthStr",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "512",
+          "values": [
+            "32",
+            "64",
+            "128",
+            "256",
+            "512",
+            "1024",
+            "2048"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "fineWinHeightStr": {
+          "name": "fineWinHeightStr",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "512",
+          "values": [
+            "32",
+            "64",
+            "128",
+            "256",
+            "512",
+            "1024",
+            "2048"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "fineWinAccAzimuth": {
+          "name": "fineWinAccAzimuth",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "16",
+          "values": [
+            "2",
+            "4",
+            "8",
+            "16",
+            "32",
+            "64"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "fineWinAccRange": {
+          "name": "fineWinAccRange",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "16",
+          "values": [
+            "2",
+            "4",
+            "8",
+            "16",
+            "32",
+            "64"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "fineWinOversampling": {
+          "name": "fineWinOversampling",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "128",
+          "values": [
+            "32",
+            "64",
+            "128",
+            "256"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "xCorrThreshold": {
+          "name": "xCorrThreshold",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "The peak cross-correlation threshold",
+          "default": "0.1",
+          "values": null,
+          "interval": "(0, *)",
+          "mandatory": false,
+          "structured": false
+        },
+        "cohThreshold": {
+          "name": "cohThreshold",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "The coherence threshold for outlier removal",
+          "default": "0.3",
+          "values": null,
+          "interval": "(0, 1]",
+          "mandatory": false,
+          "structured": false
+        },
+        "numBlocksPerOverlap": {
+          "name": "numBlocksPerOverlap",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "The number of windows per overlap for ESD",
+          "default": "10",
+          "values": null,
+          "interval": "[1, 20]",
+          "mandatory": false,
+          "structured": false
+        },
+        "esdEstimator": {
+          "name": "esdEstimator",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "ESD estimator used for azimuth shift computation",
+          "default": "Periodogram",
+          "values": [
+            "Average",
+            "Periodogram"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "weightFunc": {
+          "name": "weightFunc",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "Weight function of the coherence to use for azimuth shift estimation",
+          "default": "Inv Quadratic",
+          "values": [
+            "None",
+            "Linear",
+            "Quadratic",
+            "Inv Quadratic"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "temporalBaselineType": {
+          "name": "temporalBaselineType",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "Baseline type for building the integration network",
+          "default": "Number of images",
+          "values": [
+            "Number of images",
+            "Number of days"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "maxTemporalBaseline": {
+          "name": "maxTemporalBaseline",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Maximum temporal baseline (in days or number of images depending on the Temporal baseline type) between pairs of images to construct the network. Any number < 1 will generate a network with all of the possible pairs.",
+          "default": "4",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "integrationMethod": {
+          "name": "integrationMethod",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "Method used for integrating the shifts network.",
+          "default": "L1 and L2",
+          "values": [
+            "L1",
+            "L2",
+            "L1 and L2"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "doNotWriteTargetBands": {
+          "name": "doNotWriteTargetBands",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Do not write target bands",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "useSuppliedRangeShift": {
+          "name": "useSuppliedRangeShift",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Use user supplied range shift",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "overallRangeShift": {
+          "name": "overallRangeShift",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "The overall range shift",
+          "default": "0.0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "useSuppliedAzimuthShift": {
+          "name": "useSuppliedAzimuthShift",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Use user supplied azimuth shift",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "overallAzimuthShift": {
+          "name": "overallAzimuthShift",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "The overall azimuth shift",
+          "default": "0.0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Interferogram": {
+      "description": "Compute interferograms from stack of coregistered S-1 images",
+      "parameters": {
+        "subtractFlatEarthPhase": {
+          "name": "subtractFlatEarthPhase",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "srpPolynomialDegree": {
+          "name": "srpPolynomialDegree",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Order of 'Flat earth phase' polynomial",
+          "default": "5",
+          "values": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "srpNumberPoints": {
+          "name": "srpNumberPoints",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Number of points for the 'flat earth phase' polynomial estimation",
+          "default": "501",
+          "values": [
+            "301",
+            "401",
+            "501",
+            "601",
+            "701",
+            "801",
+            "901",
+            "1001"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "orbitDegree": {
+          "name": "orbitDegree",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Degree of orbit (polynomial) interpolator",
+          "default": "3",
+          "values": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "includeCoherence": {
+          "name": "includeCoherence",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "cohWinAz": {
+          "name": "cohWinAz",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Size of coherence estimation window in Azimuth direction",
+          "default": "10",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "cohWinRg": {
+          "name": "cohWinRg",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Size of coherence estimation window in Range direction",
+          "default": "10",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "squarePixel": {
+          "name": "squarePixel",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Use ground square pixel",
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "subtractTopographicPhase": {
+          "name": "subtractTopographicPhase",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "demName": {
+          "name": "demName",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The digital elevation model.",
+          "default": "SRTM 3Sec",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMFile": {
+          "name": "externalDEMFile",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": null,
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMNoDataValue": {
+          "name": "externalDEMNoDataValue",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": null,
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMApplyEGM": {
+          "name": "externalDEMApplyEGM",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "tileExtensionPercent": {
+          "name": "tileExtensionPercent",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "Define extension of tile for DEM simulation (optimization parameter).",
+          "default": "100",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputFlatEarthPhase": {
+          "name": "outputFlatEarthPhase",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputTopoPhase": {
+          "name": "outputTopoPhase",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputElevation": {
+          "name": "outputElevation",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputLatLon": {
+          "name": "outputLatLon",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "TOPSAR-Deburst": {
+      "description": "Debursts a Sentinel-1 TOPSAR product",
+      "parameters": {
+        "selectedPolarisations": {
+          "name": "selectedPolarisations",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of polarisations",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "TopoPhaseRemoval": {
+      "description": "Compute and subtract TOPO phase",
+      "parameters": {
+        "orbitDegree": {
+          "name": "orbitDegree",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Degree of orbit interpolation polynomial",
+          "default": "3",
+          "values": null,
+          "interval": "(1, 10]",
+          "mandatory": false,
+          "structured": false
+        },
+        "demName": {
+          "name": "demName",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The digital elevation model.",
+          "default": "SRTM 3Sec",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMFile": {
+          "name": "externalDEMFile",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": null,
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMNoDataValue": {
+          "name": "externalDEMNoDataValue",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": null,
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "tileExtensionPercent": {
+          "name": "tileExtensionPercent",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "Define extension of tile for DEM simulation (optimization parameter).",
+          "default": "100",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputTopoPhaseBand": {
+          "name": "outputTopoPhaseBand",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Output topographic phase band.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputElevationBand": {
+          "name": "outputElevationBand",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Output elevation band.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputLatLonBands": {
+          "name": "outputLatLonBands",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Output lat/lon bands.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Multilook": {
+      "description": "Averages the power across a number of lines in both the azimuth and range directions",
+      "parameters": {
+        "sourceBands": {
+          "name": "sourceBands",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of source bands.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "nRgLooks": {
+          "name": "nRgLooks",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "The user defined number of range looks",
+          "default": "1",
+          "values": null,
+          "interval": "[1, *)",
+          "mandatory": false,
+          "structured": false
+        },
+        "nAzLooks": {
+          "name": "nAzLooks",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "The user defined number of azimuth looks",
+          "default": "1",
+          "values": null,
+          "interval": "[1, *)",
+          "mandatory": false,
+          "structured": false
+        },
+        "outputIntensity": {
+          "name": "outputIntensity",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "For complex product output intensity or i and q",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "grSquarePixel": {
+          "name": "grSquarePixel",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Use ground square pixel",
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "GoldsteinPhaseFiltering": {
+      "description": "Phase Filtering",
+      "parameters": {
+        "alpha": {
+          "name": "alpha",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "adaptive filter exponent",
+          "default": "1.0",
+          "values": null,
+          "interval": "(0, 1]",
+          "mandatory": false,
+          "structured": false
+        },
+        "FFTSizeString": {
+          "name": "FFTSizeString",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "64",
+          "values": [
+            "32",
+            "64",
+            "128",
+            "256"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "windowSizeString": {
+          "name": "windowSizeString",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "3",
+          "values": [
+            "3",
+            "5",
+            "7"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "useCoherenceMask": {
+          "name": "useCoherenceMask",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Use coherence mask",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "coherenceThreshold": {
+          "name": "coherenceThreshold",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "The coherence threshold",
+          "default": "0.2",
+          "values": null,
+          "interval": "[0, 1]",
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Subset": {
+      "description": "Create a spatial and/or spectral subset of a data product.",
+      "parameters": {
+        "sourceBands": {
+          "name": "sourceBands",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of source bands.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "tiePointGrids": {
+          "name": "tiePointGrids",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of tie-point grid names.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "region": {
+          "name": "region",
+          "type": "rectangle",
+          "javaType": "rectangle",
+          "list": false,
+          "description": "The subset region in pixel coordinates. Use the following format: {x},{y},{width},{height} If not given, the entire scene is used. The 'geoRegion' parameter has precedence over this parameter.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "referenceBand": {
+          "name": "referenceBand",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The band used to indicate the pixel coordinates.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "geoRegion": {
+          "name": "geoRegion",
+          "type": "geometry",
+          "javaType": "geometry",
+          "list": false,
+          "description": "The subset region in geographical coordinates using WKT-format, e.g. POLYGON(({lon1} {lat1}, {lon2} {lat2}, ..., {lon1} {lat1})) (make sure to quote the option due to spaces in {geometry}). If not given, the entire scene is used.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "subSamplingX": {
+          "name": "subSamplingX",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "The pixel sub-sampling step in X (horizontal image direction)",
+          "default": "1",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "subSamplingY": {
+          "name": "subSamplingY",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "The pixel sub-sampling step in Y (vertical image direction)",
+          "default": "1",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "fullSwath": {
+          "name": "fullSwath",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Forces the operator to extend the subset region to the full swath.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "vectorFile": {
+          "name": "vectorFile",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": "The file from which the polygon is read.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "polygonRegion": {
+          "name": "polygonRegion",
+          "type": "polygon",
+          "javaType": "polygon",
+          "list": false,
+          "description": "The subset region in geographical coordinates using WKT-format, e.g. POLYGON(({lon1} {lat1}, {lon2} {lat2}, ..., {lon1} {lat1})) If not given, the geometryRegion or pixelRegion is used.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "copyMetadata": {
+          "name": "copyMetadata",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Whether to copy the metadata of the source product.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "SnaphuExport": {
+      "description": "Export data and prepare conf file for SNAPHU processing",
+      "parameters": {
+        "targetFolder": {
+          "name": "targetFolder",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": "The output folder to which the data product is written.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "statCostMode": {
+          "name": "statCostMode",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "Size of coherence estimation window in Azimuth direction",
+          "default": "DEFO",
+          "values": [
+            "TOPO",
+            "DEFO",
+            "SMOOTH",
+            "NOSTATCOSTS"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "initMethod": {
+          "name": "initMethod",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "Algorithm used for initialization of the wrapped phase values",
+          "default": "MST",
+          "values": [
+            "MST",
+            "MCF"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "numberOfTileRows": {
+          "name": "numberOfTileRows",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Divide the image into tiles and process in parallel. Set to 1 for single tiled.",
+          "default": "10",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "numberOfTileCols": {
+          "name": "numberOfTileCols",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Divide the image into tiles and process in parallel. Set to 1 for single tiled.",
+          "default": "10",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "numberOfProcessors": {
+          "name": "numberOfProcessors",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Number of concurrent processing threads. Set to 1 for single threaded.",
+          "default": "4",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "rowOverlap": {
+          "name": "rowOverlap",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Overlap, in pixels, between neighboring tiles.",
+          "default": "200",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "colOverlap": {
+          "name": "colOverlap",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Overlap, in pixels, between neighboring tiles.",
+          "default": "200",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "tileCostThreshold": {
+          "name": "tileCostThreshold",
+          "type": "int",
+          "javaType": "int",
+          "list": false,
+          "description": "Cost threshold to use for determining boundaries of reliable regions (long, dimensionless; scaled according to other cost constants). Larger cost threshold implies smaller regions---safer, but more expensive computationally.",
+          "default": "500",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "SnaphuImport": {
+      "description": "Ingest SNAPHU results into InSAR product.",
+      "parameters": {
+        "doNotKeepWrapped": {
+          "name": "doNotKeepWrapped",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "PhaseToDisplacement": {
+      "description": "Phase To Displacement Conversion along LOS",
+      "parameters": {}
+    },
+    "Terrain-Correction": {
+      "description": "RD method for orthorectification",
+      "parameters": {
+        "sourceBands": {
+          "name": "sourceBands",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "The list of source bands.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "demName": {
+          "name": "demName",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The digital elevation model.",
+          "default": "SRTM 3Sec",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMFile": {
+          "name": "externalDEMFile",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": null,
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMNoDataValue": {
+          "name": "externalDEMNoDataValue",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": null,
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalDEMApplyEGM": {
+          "name": "externalDEMApplyEGM",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "demResamplingMethod": {
+          "name": "demResamplingMethod",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "BILINEAR_INTERPOLATION",
+          "values": [
+            "NEAREST_NEIGHBOUR",
+            "BILINEAR_INTERPOLATION",
+            "CUBIC_CONVOLUTION",
+            "BISINC_5_POINT_INTERPOLATION",
+            "BISINC_11_POINT_INTERPOLATION",
+            "BISINC_21_POINT_INTERPOLATION",
+            "BICUBIC_INTERPOLATION",
+            "DELAUNAY_INTERPOLATION"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "imgResamplingMethod": {
+          "name": "imgResamplingMethod",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "BILINEAR_INTERPOLATION",
+          "values": [
+            "NEAREST_NEIGHBOUR",
+            "BILINEAR_INTERPOLATION",
+            "CUBIC_CONVOLUTION",
+            "BISINC_5_POINT_INTERPOLATION",
+            "BISINC_11_POINT_INTERPOLATION",
+            "BISINC_21_POINT_INTERPOLATION",
+            "BICUBIC_INTERPOLATION"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "pixelSpacingInMeter": {
+          "name": "pixelSpacingInMeter",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "The pixel spacing in meters",
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "pixelSpacingInDegree": {
+          "name": "pixelSpacingInDegree",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "The pixel spacing in degrees",
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "mapProjection": {
+          "name": "mapProjection",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The coordinate reference system in well known text format",
+          "default": "WGS84(DD)",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "alignToStandardGrid": {
+          "name": "alignToStandardGrid",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Force the image grid to be aligned with a specific point",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "standardGridOriginX": {
+          "name": "standardGridOriginX",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "x-coordinate of the standard grid's origin point",
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "standardGridOriginY": {
+          "name": "standardGridOriginY",
+          "type": "double",
+          "javaType": "double",
+          "list": false,
+          "description": "y-coordinate of the standard grid's origin point",
+          "default": "0",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "nodataValueAtSea": {
+          "name": "nodataValueAtSea",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Mask the sea with no data value (faster)",
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveDEM": {
+          "name": "saveDEM",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveLatLon": {
+          "name": "saveLatLon",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveIncidenceAngleFromEllipsoid": {
+          "name": "saveIncidenceAngleFromEllipsoid",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveLocalIncidenceAngle": {
+          "name": "saveLocalIncidenceAngle",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveProjectedLocalIncidenceAngle": {
+          "name": "saveProjectedLocalIncidenceAngle",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveSelectedSourceBand": {
+          "name": "saveSelectedSourceBand",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveLayoverShadowMask": {
+          "name": "saveLayoverShadowMask",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "outputComplex": {
+          "name": "outputComplex",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "applyRadiometricNormalization": {
+          "name": "applyRadiometricNormalization",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveSigmaNought": {
+          "name": "saveSigmaNought",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveGammaNought": {
+          "name": "saveGammaNought",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "saveBetaNought": {
+          "name": "saveBetaNought",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": null,
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "incidenceAngleForSigma0": {
+          "name": "incidenceAngleForSigma0",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "Use projected local incidence angle from DEM",
+          "values": [
+            "Use incidence angle from Ellipsoid",
+            "Use local incidence angle from DEM",
+            "Use projected local incidence angle from DEM"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "incidenceAngleForGamma0": {
+          "name": "incidenceAngleForGamma0",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": null,
+          "default": "Use projected local incidence angle from DEM",
+          "values": [
+            "Use incidence angle from Ellipsoid",
+            "Use local incidence angle from DEM",
+            "Use projected local incidence angle from DEM"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "auxFile": {
+          "name": "auxFile",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The auxiliary file",
+          "default": "Latest Auxiliary File",
+          "values": [
+            "Latest Auxiliary File",
+            "Product Auxiliary File",
+            "External Auxiliary File"
+          ],
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "externalAuxFile": {
+          "name": "externalAuxFile",
+          "type": "file",
+          "javaType": "file",
+          "list": false,
+          "description": "The antenne elevation pattern gain auxiliary data file.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "Collocate": {
+      "description": "Collocates two products based on their geo-codings.",
+      "parameters": {
+        "sourceProductPaths": {
+          "name": "sourceProductPaths",
+          "type": "string",
+          "javaType": "string,string,string,...",
+          "list": true,
+          "description": "A comma-separated list of file paths specifying the source products",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "referenceProductName": {
+          "name": "referenceProductName",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The name of the reference product.",
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "targetProductType": {
+          "name": "targetProductType",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The product type string for the target product (informal)",
+          "default": "COLLOCATED",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "copySecondaryMetadata": {
+          "name": "copySecondaryMetadata",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Copies also the metadata of the secondary products to the target.",
+          "default": "false",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "renameReferenceComponents": {
+          "name": "renameReferenceComponents",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Whether or not components of the reference product shall be renamed in the target product.",
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "renameSecondaryComponents": {
+          "name": "renameSecondaryComponents",
+          "type": "boolean",
+          "javaType": "boolean",
+          "list": false,
+          "description": "Whether or not components of the secondary product(s) shall be renamed in the target product.",
+          "default": "true",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "referenceComponentPattern": {
+          "name": "referenceComponentPattern",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The text pattern to be used when renaming reference components.",
+          "default": "${ORIGINAL_NAME}_M",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "secondaryComponentPattern": {
+          "name": "secondaryComponentPattern",
+          "type": "string",
+          "javaType": "string",
+          "list": false,
+          "description": "The text pattern to be used when renaming secondary components.",
+          "default": "${ORIGINAL_NAME}_S${SLAVE_NUMBER_ID}",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        },
+        "resamplingType": {
+          "name": "resamplingType",
+          "type": "resamplingType",
+          "javaType": "resamplingType",
+          "list": false,
+          "description": "The method to be used when resampling the secondary grid onto the reference grid.",
+          "default": "NEAREST_NEIGHBOUR",
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": false
+        }
+      }
+    },
+    "BandMaths": {
+      "description": "Create a product with one or more bands using mathematical expressions.",
+      "parameters": {
+        "targetBands": {
+          "name": "targetBands",
+          "type": "structured",
+          "javaType": null,
+          "list": false,
+          "description": null,
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": true
+        },
+        "variables": {
+          "name": "variables",
+          "type": "structured",
+          "javaType": null,
+          "list": false,
+          "description": null,
+          "default": null,
+          "values": null,
+          "interval": null,
+          "mandatory": false,
+          "structured": true
+        }
+      }
+    }
+  }
+}

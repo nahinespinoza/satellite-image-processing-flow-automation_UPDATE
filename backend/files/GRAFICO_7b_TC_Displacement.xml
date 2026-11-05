@@ -1,0 +1,51 @@
+<graph id="Graph">
+  <version>1.0</version>
+
+  <node id="Read">
+    <operator>Read</operator>
+    <sources/>
+    <parameters>
+      <file>${inputFile}</file>
+      <copyMetadata>true</copyMetadata>
+    </parameters>
+  </node>
+
+  <node id="Terrain-Correction">
+    <operator>Terrain-Correction</operator>
+    <sources>
+      <sourceProduct refid="Read"/>
+    </sources>
+    <parameters>
+      <sourceBands>${sourceBands}</sourceBands>
+      <demName>SRTM 1Sec HGT</demName>
+      <externalDEMFile/>
+      <externalDEMNoDataValue>0.0</externalDEMNoDataValue>
+      <demResamplingMethod>BILINEAR_INTERPOLATION</demResamplingMethod>
+      <imgResamplingMethod>BILINEAR_INTERPOLATION</imgResamplingMethod>
+      <pixelSpacingInMeter>0.0</pixelSpacingInMeter>
+      <pixelSpacingInDegree>0.0</pixelSpacingInDegree>
+      <mapProjection>WGS84(DD)</mapProjection>
+      <saveDEM>false</saveDEM>
+      <saveLatLon>false</saveLatLon>
+      <saveIncidenceAngleFromEllipsoid>false</saveIncidenceAngleFromEllipsoid>
+      <saveLocalIncidenceAngle>false</saveLocalIncidenceAngle>
+      <saveProjectedLocalIncidenceAngle>false</saveProjectedLocalIncidenceAngle>
+      <saveSelectedSourceBand>true</saveSelectedSourceBand>
+      <outputComplex>false</outputComplex>
+      <applyRadiometricNormalization>false</applyRadiometricNormalization>
+      <nodataValueAtSea>false</nodataValueAtSea>
+    </parameters>
+  </node>
+
+  <node id="Write">
+    <operator>Write</operator>
+    <sources>
+      <sourceProduct refid="Terrain-Correction"/>
+    </sources>
+    <parameters>
+      <file>${outputFile}</file>
+      <formatName>BEAM-DIMAP</formatName>
+    </parameters>
+  </node>
+
+</graph>

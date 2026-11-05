@@ -24,8 +24,8 @@
 #     Lee el .dim del Gráfico 4 (Subset) y genera los archivos binarios que
 #     snaphu necesita (Phase_*.img, coh_*.img, snaphu.conf) en la carpeta
 #     SNAPHU. El tiling (filas/columnas/overlap/procesadores/costThreshold)
-#     es configurable desde la UI (TILE_ROWS, TILE_COLS, ROW_OVERLAP,
-#     COL_OVERLAP, PROCESSORS, COST_THRESHOLD); por defecto usa 4x4 tiles
+#     es configurable desde la UI (SNAPHU_TILE_ROWS, SNAPHU_TILE_COLS, SNAPHU_ROW_OVERLAP,
+#     SNAPHU_COL_OVERLAP, SNAPHU_PROCESSORS, SNAPHU_COST_THRESHOLD; también sin prefijo); por defecto usa 4x4 tiles
 #     con overlap de 300 px, configuración confirmada empíricamente como
 #     estable y ~4x más rápida que un solo tile PARA LA ESCENA COMPLETA.
 #     Si el subset es chico, el Gráfico 6 reduce esta config automáticamente
@@ -61,6 +61,8 @@ import glob
 import struct
 from pathlib import Path
 from datetime import datetime
+
+from graph_templates import render_graph
 
 BASE_DIR = Path(os.getenv("BASE_DIR", "/home/nahin/Documentos/SNAP_DOCUMENTATION/Resultados_V1.3/Scripts_Automatizacion_Snaphu"))
 SUBSET_DIM = os.getenv("SUBSET_DIM")
@@ -312,26 +314,6 @@ def collect_inputs():
     gpt_bin = os.environ.get("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
     snaphu_bin = os.environ.get("SNAPHU_BIN", "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu")
 
-    # ── Parámetros de tiling configurables desde la UI/controller ────────
-    # Estos son los valores que el usuario ve y puede editar en el panel
-    # "Parámetros Configurables". Los defaults son EXACTAMENTE los que
-    # antes estaban hardcodeados en el Gráfico 5, así que si el controller
-    # no manda nada, el comportamiento no cambia.
-    # NOTA: estos son el punto de PARTIDA deseado por el usuario/escena
-    # completa. El propio pipeline (Gráfico 6) puede reducirlos más abajo
-    # si detecta que el subset es demasiado chico para sostenerlos —
-    # eso no lo decide el usuario, es una corrección automática interna.
-    try:
-        tile_rows = int(os.environ.get("TILE_ROWS", "4"))
-        tile_cols = int(os.environ.get("TILE_COLS", "4"))
-        processors = int(os.environ.get("PROCESSORS", "4"))
-        row_overlap = int(os.environ.get("ROW_OVERLAP", "300"))
-        col_overlap = int(os.environ.get("COL_OVERLAP", "300"))
-        cost_threshold = int(os.environ.get("COST_THRESHOLD", "500"))
-    except ValueError as e:
-        error(f"Uno de los parámetros de tiling no es un entero válido: {e}")
-        sys.exit(1)
-
     # Validar que todas las variables requeridas estén presentes
     required = {
         "SUBSET_DIM": subset_dim,
@@ -353,10 +335,6 @@ def collect_inputs():
             sys.exit(1)
 
     ok(f"Configuración cargada correctamente")
-    info(f"Tiling solicitado por el usuario: {tile_rows}x{tile_cols}, "
-         f"overlap {row_overlap}/{col_overlap}, procesadores={processors}, "
-         f"costThreshold={cost_threshold} "
-         f"(puede ajustarse automáticamente si el subset es muy chico)")
     
     return {
         "subset_dim": subset_dim,
@@ -366,12 +344,6 @@ def collect_inputs():
         "import_dir": import_dir,
         "gpt_bin": gpt_bin,
         "snaphu_bin": snaphu_bin,
-        "tile_rows": tile_rows,
-        "tile_cols": tile_cols,
-        "processors": processors,
-        "row_overlap": row_overlap,
-        "col_overlap": col_overlap,
-        "cost_threshold": cost_threshold,
     }
 # =============================================================================
 # PASO 1 – GRÁFICO 5: SNAPHU EXPORT (con validación posterior)
@@ -385,38 +357,11 @@ def run_grafico5(cfg):
 
     subset_dim = cfg["subset_dim"]
 
-    xml_content = f"""<graph id="Graph">
-  <version>1.0</version>
-
-  <node id="Read">
-    <operator>Read</operator>
-    <sources/>
-    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <file>{subset_dim}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="SnaphuExport">
-    <operator>SnaphuExport</operator>
-    <sources>
-      <sourceProduct refid="Read"/>
-    </sources>
-    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <targetFolder>{snaphu_folder}</targetFolder>
-      <statCostMode>DEFO</statCostMode>
-      <initMethod>MCF</initMethod>
-      <numberOfTileRows>{cfg['tile_rows']}</numberOfTileRows>
-      <numberOfTileCols>{cfg['tile_cols']}</numberOfTileCols>
-      <numberOfProcessors>{cfg['processors']}</numberOfProcessors>
-      <rowOverlap>{cfg['row_overlap']}</rowOverlap>
-      <colOverlap>{cfg['col_overlap']}</colOverlap>
-      <tileCostThreshold>{cfg['cost_threshold']}</tileCostThreshold>
-    </parameters>
-  </node>
-
-</graph>
-"""
+    xml_content = render_graph(
+        "GRAFICO_5a_SnaphuExport.xml",
+        inputFile=subset_dim,
+        targetFolder=snaphu_folder,
+    )
 
     graph_path = Path(snaphu_folder) / "GRAFICO_5_SnaphuExport_auto.xml"
     graph_path.write_text(xml_content, encoding="utf-8")
@@ -948,51 +893,12 @@ def run_grafico7(cfg):
         error("Faltan insumos para el Gráfico 7. Abortando.")
         return False
 
-    xml_content = f"""<graph id="Graph">
-  <version>1.0</version>
-
-  <node id="Read">
-    <operator>Read</operator>
-    <sources/>
-    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <file>{subset_dim}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="ReadUnwrapped">
-    <operator>Read</operator>
-    <sources/>
-    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <file>{unw_file}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="SnaphuImport">
-    <operator>SnaphuImport</operator>
-    <sources>
-      <sourceProduct refid="Read"/>
-      <sourceProduct2 refid="ReadUnwrapped"/>
-    </sources>
-    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <doNotKeepWrapped>false</doNotKeepWrapped>
-    </parameters>
-  </node>
-
-  <node id="Write">
-    <operator>Write</operator>
-    <sources>
-      <sourceProduct refid="SnaphuImport"/>
-    </sources>
-    <parameters class="com.bc.ceres.binding.dom.XppDomElement">
-      <file>{out_path}</file>
-      <formatName>BEAM-DIMAP</formatName>
-    </parameters>
-  </node>
-
-</graph>
-"""
+    xml_content = render_graph(
+        "GRAFICO_5c_SnaphuImport.xml",
+        inputFile=subset_dim,
+        unwrappedFile=unw_file,
+        outputFile=out_path,
+    )
 
     graph_path = Path(snaphu_folder) / "GRAFICO_7_SnaphuImport_auto.xml"
     graph_path.write_text(xml_content, encoding="utf-8")

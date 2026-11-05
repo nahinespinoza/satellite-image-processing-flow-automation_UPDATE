@@ -34,6 +34,8 @@ import os
 import subprocess
 from pathlib import Path
 
+from graph_templates import render_graph
+
 # Carpeta base principal
 BASE_DIR = Path(os.getenv("BASE_DIR", "/home/nahin/Documentos/SNAP_DOCUMENTATION/Resultados_V1.3/Scripts_Automatizacion_Snaphu"))
 SUBSET_DIM = os.getenv("SUBSET_DIM")
@@ -88,12 +90,9 @@ OUTPUT_FOLDER.mkdir(parents=True, exist_ok=True)
 # GPT
 GPT_BIN = os.getenv("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
 
-COHERENCE_THRESHOLD = float(os.getenv("COHERENCE_THRESHOLD", 0.3))
 
-# Parámetros de Terrain Correction
-DEM_NAME = "SRTM 1Sec HGT"
-DEM_RESAMPLING = "BILINEAR_INTERPOLATION"
-IMG_RESAMPLING = "BILINEAR_INTERPOLATION"
+# Los parámetros de Terrain Correction (DEM, resampling, proyección...) están
+# en las plantillas GRAFICO_7a/7b de backend/files y se editan desde la interfaz.
 
 # =============================================================================
 # =============================================================================
@@ -174,58 +173,12 @@ def run_terrain_correction_subset(cfg):
 
     source_bands_xml = ",".join(selected)
 
-    xml_content = f"""<graph id="Graph">
-  <version>1.0</version>
-
-  <node id="Read">
-    <operator>Read</operator>
-    <sources/>
-    <parameters>
-      <file>{subset_dim}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="Terrain-Correction">
-    <operator>Terrain-Correction</operator>
-    <sources>
-      <sourceProduct refid="Read"/>
-    </sources>
-    <parameters>
-      <sourceBands>{source_bands_xml}</sourceBands>
-      <demName>{DEM_NAME}</demName>
-      <externalDEMFile/>
-      <externalDEMNoDataValue>0.0</externalDEMNoDataValue>
-      <demResamplingMethod>{DEM_RESAMPLING}</demResamplingMethod>
-      <imgResamplingMethod>{IMG_RESAMPLING}</imgResamplingMethod>
-      <pixelSpacingInMeter>0.0</pixelSpacingInMeter>
-      <pixelSpacingInDegree>0.0</pixelSpacingInDegree>
-      <mapProjection>WGS84(DD)</mapProjection>
-      <saveDEM>false</saveDEM>
-      <saveLatLon>false</saveLatLon>
-      <saveIncidenceAngleFromEllipsoid>false</saveIncidenceAngleFromEllipsoid>
-      <saveLocalIncidenceAngle>false</saveLocalIncidenceAngle>
-      <saveProjectedLocalIncidenceAngle>false</saveProjectedLocalIncidenceAngle>
-      <saveSelectedSourceBand>true</saveSelectedSourceBand>
-      <outputComplex>false</outputComplex>
-      <applyRadiometricNormalization>false</applyRadiometricNormalization>
-      <nodataValueAtSea>false</nodataValueAtSea>
-    </parameters>
-  </node>
-
-  <node id="Write">
-    <operator>Write</operator>
-    <sources>
-      <sourceProduct refid="Terrain-Correction"/>
-    </sources>
-    <parameters>
-      <file>{out_path}</file>
-      <formatName>BEAM-DIMAP</formatName>
-    </parameters>
-  </node>
-
-</graph>
-"""
+    xml_content = render_graph(
+        "GRAFICO_7a_TC_Subset.xml",
+        inputFile=subset_dim,
+        sourceBands=source_bands_xml,
+        outputFile=out_path,
+    )
 
     graph_path = out_folder / "TC_Subset_auto.xml"
     graph_path.write_text(xml_content, encoding="utf-8")
@@ -268,58 +221,12 @@ def run_terrain_correction_displacement(cfg):
     out_name = Path(disp_dim).stem + "_TC"
     out_path = str(out_folder / out_name)
 
-    xml_content = f"""<graph id="Graph">
-  <version>1.0</version>
-
-  <node id="Read">
-    <operator>Read</operator>
-    <sources/>
-    <parameters>
-      <file>{disp_dim}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="Terrain-Correction">
-    <operator>Terrain-Correction</operator>
-    <sources>
-      <sourceProduct refid="Read"/>
-    </sources>
-    <parameters>
-      <sourceBands>{displacement_band}</sourceBands>
-      <demName>{DEM_NAME}</demName>
-      <externalDEMFile/>
-      <externalDEMNoDataValue>0.0</externalDEMNoDataValue>
-      <demResamplingMethod>{DEM_RESAMPLING}</demResamplingMethod>
-      <imgResamplingMethod>{IMG_RESAMPLING}</imgResamplingMethod>
-      <pixelSpacingInMeter>0.0</pixelSpacingInMeter>
-      <pixelSpacingInDegree>0.0</pixelSpacingInDegree>
-      <mapProjection>WGS84(DD)</mapProjection>
-      <saveDEM>false</saveDEM>
-      <saveLatLon>false</saveLatLon>
-      <saveIncidenceAngleFromEllipsoid>false</saveIncidenceAngleFromEllipsoid>
-      <saveLocalIncidenceAngle>false</saveLocalIncidenceAngle>
-      <saveProjectedLocalIncidenceAngle>false</saveProjectedLocalIncidenceAngle>
-      <saveSelectedSourceBand>true</saveSelectedSourceBand>
-      <outputComplex>false</outputComplex>
-      <applyRadiometricNormalization>false</applyRadiometricNormalization>
-      <nodataValueAtSea>false</nodataValueAtSea>
-    </parameters>
-  </node>
-
-  <node id="Write">
-    <operator>Write</operator>
-    <sources>
-      <sourceProduct refid="Terrain-Correction"/>
-    </sources>
-    <parameters>
-      <file>{out_path}</file>
-      <formatName>BEAM-DIMAP</formatName>
-    </parameters>
-  </node>
-
-</graph>
-"""
+    xml_content = render_graph(
+        "GRAFICO_7b_TC_Displacement.xml",
+        inputFile=disp_dim,
+        sourceBands=displacement_band,
+        outputFile=out_path,
+    )
 
     graph_path = Path(cfg["output_folder"]) / "TC_Displacement_auto.xml"
     graph_path.write_text(xml_content, encoding="utf-8")
@@ -363,53 +270,12 @@ def run_create_stack(cfg, tc_subset_dim, tc_displacement_dim):
     out_folder = Path(cfg["output_folder"])
     out_path = str(out_folder / "Stack_TC")
 
-    xml_content = f"""<graph id="Graph">
-  <version>1.0</version>
-
-  <node id="Read-Reference">
-    <operator>Read</operator>
-    <sources/>
-    <parameters>
-      <file>{tc_subset_dim}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="Read-Secondary">
-    <operator>Read</operator>
-    <sources/>
-    <parameters>
-      <file>{tc_displacement_dim}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="Collocate">
-    <operator>Collocate</operator>
-    <sources>
-      <reference refid="Read-Reference"/>
-      <secondary refid="Read-Secondary"/>
-    </sources>
-    <parameters>
-      <resamplingType>NEAREST_NEIGHBOUR</resamplingType>
-      <renameReferenceComponents>true</renameReferenceComponents>
-      <renameSecondaryComponents>true</renameSecondaryComponents>
-    </parameters>
-  </node>
-
-  <node id="Write">
-    <operator>Write</operator>
-    <sources>
-      <sourceProduct refid="Collocate"/>
-    </sources>
-    <parameters>
-      <file>{out_path}</file>
-      <formatName>BEAM-DIMAP</formatName>
-    </parameters>
-  </node>
-
-</graph>
-"""
+    xml_content = render_graph(
+        "GRAFICO_7c_Collocate.xml",
+        inputFile=tc_subset_dim,
+        inputFile2=tc_displacement_dim,
+        outputFile=out_path,
+    )
 
     graph_path = out_folder / "Collocate_auto.xml"
     graph_path.write_text(xml_content, encoding="utf-8")
@@ -467,70 +333,16 @@ def run_band_maths_mask(cfg, stack_dim):
     out_name = "Stack_TC_Masked"
     out_path = str(out_folder / out_name)
 
-    # Expresión del manual + filtro de valores imposibles. IMPORTANTE:
-    # se invirtió la lógica respecto al intento anterior. La forma
-    # "abs(x) > UMBRAL then 0" no descartó los valores de ~10^38 en la
-    # práctica — la hipótesis es que jexp evalúa esos valores extremos
-    # como NaN internamente, y en aritmética IEEE 754 cualquier
-    # comparación con NaN (incluyendo "NaN > 2.0") da False, dejando
-    # pasar el valor corrupto al "else" en vez de descartarlo.
-    # Solución: exigir que el valor esté DENTRO de un rango explícito
-    # para aceptarlo (rango cerrado con AND), en vez de comparar el
-    # valor corrupto contra un umbral. Si el valor es NaN o extremo,
-    # ninguna de las dos comparaciones (>= -2.0 y <= 2.0) será True,
-    # y por construcción cae en el "then 0" por defecto.
-    DISPLACEMENT_MAX_M = 2.0
-    expression = (
-        f"if ({coherence_band} &gt; {COHERENCE_THRESHOLD} and "
-        f"{displacement_band} &gt;= -{DISPLACEMENT_MAX_M} and "
-        f"{displacement_band} &lt;= {DISPLACEMENT_MAX_M}) "
-        f"then {displacement_band} else 0"
+    # La expresión y sus umbrales (coherencia, desplazamiento máximo) viven en
+    # GRAFICO_7d y se editan desde la interfaz; solo se sustituyen los nombres
+    # de banda, que se detectan al ejecutar.
+    xml_content = render_graph(
+        "GRAFICO_7d_BandMaths_Mask.xml",
+        inputFile=stack_dim,
+        coherenceBand=coherence_band,
+        displacementBand=displacement_band,
+        outputFile=out_path,
     )
-
-    xml_content = f"""<graph id="Graph">
-  <version>1.0</version>
-
-  <node id="Read">
-    <operator>Read</operator>
-    <sources/>
-    <parameters>
-      <file>{stack_dim}</file>
-      <copyMetadata>true</copyMetadata>
-    </parameters>
-  </node>
-
-  <node id="BandMaths">
-    <operator>BandMaths</operator>
-    <sources>
-      <sourceProduct refid="Read"/>
-    </sources>
-    <parameters>
-      <targetBands>
-        <targetBand>
-          <name>displacement_masked</name>
-          <type>float32</type>
-          <expression>{expression}</expression>
-          <description>Desplazamiento con mascara de coherencia (umbral {COHERENCE_THRESHOLD}), segun manual.</description>
-          <unit>m</unit>
-          <noDataValue>NaN</noDataValue>
-        </targetBand>
-      </targetBands>
-    </parameters>
-  </node>
-
-  <node id="Write">
-    <operator>Write</operator>
-    <sources>
-      <sourceProduct refid="BandMaths"/>
-    </sources>
-    <parameters>
-      <file>{out_path}</file>
-      <formatName>BEAM-DIMAP</formatName>
-    </parameters>
-  </node>
-
-</graph>
-"""
 
     graph_path = out_folder / "BandMaths_Mask_auto.xml"
     graph_path.write_text(xml_content, encoding="utf-8")
@@ -556,7 +368,7 @@ def run_band_maths_mask(cfg, stack_dim):
             valid = data[np.isfinite(data)]
             n_zero = (valid == 0).sum()
             n_nonzero = (valid != 0).sum()
-            info(f"  Píxeles en 0 (coherencia <= {COHERENCE_THRESHOLD}): "
+            info(f"  Píxeles en 0 (enmascarados): "
                  f"{n_zero:,} ({100*n_zero/valid.size:.1f}%)")
             info(f"  Píxeles con desplazamiento real: {n_nonzero:,} "
                  f"({100*n_nonzero/valid.size:.1f}%)")
@@ -585,7 +397,7 @@ def main():
     print(f"  Subset (Gráfico 4)      : {cfg['subset_dim']}")
     print(f"  Displacement (_UNW_DISP): {cfg['displacement_dim']}")
     print(f"  Carpeta de salida       : {cfg['output_folder']}")
-    print(f"  Umbral de coherencia    : <= {COHERENCE_THRESHOLD}\n")
+    print(f"  Máscara (GRAFICO_7d)    : expresión editable desde el editor de grafos\n")
 
     Path(cfg["output_folder"]).mkdir(parents=True, exist_ok=True)
 

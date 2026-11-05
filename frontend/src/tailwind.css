@@ -1,0 +1,22 @@
+@tailwind base;
+@tailwind components;
+
+/*
+ * Reset local de botones del GraphWorkflowEditor: index.css define un `button`
+ * global (width 100%, margin-top, fondo azul, hover azul) pensado para los
+ * formularios viejos. Va antes de las utilidades para que estas lo sobrescriban.
+ * .gwe-legacy marca contenido de la app (step2Extra) que conserva su estilo propio.
+ */
+.gwe :where(button:not(.gwe-legacy *)),
+.gwe :where(button:not(.gwe-legacy *)):hover {
+  width: auto;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background-color: transparent;
+  color: inherit;
+  font: inherit;
+}
+
+@tailwind utilities;

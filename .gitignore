@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Archivos temporales generados por el backend
+backend/files/temp/
+
+# Dependencias
+node_modules/
