@@ -1,5 +1,5 @@
 # satellite-image-processing-flow-automation_UPDATE
-Get-ChildItem "$env:TEMP\_MEI*" -Recurse -Filter "main.*" -ErrorAction SilentlyContinue | Select-Object FullName
+Get-ChildItem $env:TEMP -Directory -Filter "_MEI*" | ForEach-Object { Get-ChildItem $_.FullName -Recurse -Filter "main.*" } | Select-Object FullName
 ## Ejecutable de un solo archivo
 
 `dist/SatelliteFlow` (Linux) / `dist\SatelliteFlow.exe` (Windows) incluye Python, backend, interfaz web y scripts.
