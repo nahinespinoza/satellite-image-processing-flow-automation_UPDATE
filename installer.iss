@@ -122,6 +122,7 @@ procedure CurStepChanged(CurStep: TSetupStep);
 var
   RC: Integer;
   Json, DataDir, Dest: String;
+  Raw: AnsiString;
 begin
   if CurStep <> ssPostInstall then Exit;
 
@@ -148,8 +149,8 @@ begin
       ExpandConstant('{tmp}\snaphu_path.txt') + '''"', '', SW_HIDE, ewWaitUntilTerminated, RC);
     if FileExists(ExpandConstant('{tmp}\snaphu_path.txt')) then
     begin
-      LoadStringFromFile(ExpandConstant('{tmp}\snaphu_path.txt'), Json);
-      SnaphuPath := Trim(Json);
+      LoadStringFromFile(ExpandConstant('{tmp}\snaphu_path.txt'), Raw);
+      SnaphuPath := Trim(String(Raw));
     end;
   end;
 
