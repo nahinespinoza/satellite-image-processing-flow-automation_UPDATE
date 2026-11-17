@@ -1,5 +1,5 @@
 // src/api.js
-const API_BASE = "http://localhost:5000";
+const API_BASE = process.env.REACT_APP_API_BASE ?? (window.location.port === "3000" ? "http://localhost:5000" : "");
 
 export async function obtenerConfig() {
   const response = await fetch(`${API_BASE}/config`);

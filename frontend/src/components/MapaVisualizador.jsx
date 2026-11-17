@@ -56,7 +56,7 @@ import shadowUrl from "leaflet/dist/images/marker-shadow.png";
 delete L.Icon.Default.prototype._getIconUrl;
 L.Icon.Default.mergeOptions({ iconUrl, iconRetinaUrl, shadowUrl });
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = process.env.REACT_APP_API_BASE ?? (window.location.port === "3000" ? "http://localhost:5000" : "");
 const { BaseLayer } = LayersControl;
 
 // Opción "Del servidor" (explorar backend/files/images y output). Oculta por

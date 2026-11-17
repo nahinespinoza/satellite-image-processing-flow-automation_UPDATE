@@ -1,4 +1,5 @@
 import os
+import sys
 from flask import Flask, jsonify, request, send_file
 from flask_cors import CORS
 import subprocess
@@ -23,21 +24,78 @@ CORS(app)
 # ==================== CONFIGURACIÓN DE RUTAS (AJUSTAR SEGÚN CADA PC) ====================
 # Estructura asumida: <PROJECT_ROOT>/backend/controller.py (este archivo) y
 # <PROJECT_ROOT>/Scripts_Automatizacion_Snaphu/... (scripts de los pasos 5-7).
-BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
+FROZEN = getattr(sys, "frozen", False)
 
-# Carpeta de los scripts de automatización de Snaphu. Queda relativa al
-# proyecto, así que no hay que tocarla al cambiar de PC -- solo si cambia
-# la estructura de carpetas.
+if FROZEN:
+    # Ejecutable empaquetado (PyInstaller): los recursos de solo lectura
+    # (scripts, gráficos XML base, frontend) viven en la carpeta temporal
+    # de extracción; los datos del usuario van a una carpeta persistente.
+    RESOURCE_DIR = sys._MEIPASS
+    if sys.platform == "win32":
+        _base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+    else:
+        _base = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+    DATA_DIR = os.environ.get("SNAP_APP_DATA") or os.path.join(_base, "SatelliteFlow")
+    BACKEND_DIR = os.path.join(DATA_DIR, "backend")
+    PROJECT_ROOT = RESOURCE_DIR
+    FRONTEND_DIR = os.path.join(RESOURCE_DIR, "frontend_build")
+    # Primera ejecución: copiar los gráficos XML base a la carpeta de datos
+    _src_files = os.path.join(RESOURCE_DIR, "backend", "files")
+    _dst_files = os.path.join(BACKEND_DIR, "files")
+    for _sub in ("", "images", "output", os.path.join("temp", "converted")):
+        os.makedirs(os.path.join(_dst_files, _sub), exist_ok=True)
+    if os.path.isdir(_src_files):
+        for _f in os.listdir(_src_files):
+            _d = os.path.join(_dst_files, _f)
+            if os.path.isfile(os.path.join(_src_files, _f)) and not os.path.exists(_d):
+                shutil.copy2(os.path.join(_src_files, _f), _d)
+    os.environ.setdefault("GRAPHS_DIR", _dst_files)
+else:
+    BACKEND_DIR = os.path.dirname(os.path.abspath(__file__))
+    PROJECT_ROOT = os.path.dirname(BACKEND_DIR)
+    DATA_DIR = PROJECT_ROOT
+    FRONTEND_DIR = os.path.join(PROJECT_ROOT, "frontend", "build")
+
 SCRIPTS_DIR = os.path.join(PROJECT_ROOT, "Scripts_Automatizacion_Snaphu")
 
-# Binarios externos de SNAP / SNAPHU: dependen de la instalación de cada
-# máquina. Se pueden sobreescribir con variables de entorno (GPT_BIN,
-# SNAPHU_BIN, PCONVERT_BIN) sin tocar el código; si no se definen, se usa
-# el valor por defecto de abajo -- CAMBIAR según la PC donde se ejecute.
-GPT_BIN = os.environ.get("GPT_BIN", "/home/nahin/esa-snap/bin/gpt")
-SNAPHU_BIN = os.environ.get("SNAPHU_BIN", "/home/nahin/.snap/auxdata/snaphu-v2.0.4_linux/bin/snaphu")
-PCONVERT_BIN = os.environ.get("PCONVERT_BIN", "/home/nahin/esa-snap/bin/pconvert")
+
+def _find_binary(env_name, names, candidates_globs):
+    """Busca un binario externo: variable de entorno, snap_paths.json, PATH, rutas típicas."""
+    val = os.environ.get(env_name)
+    if val and os.path.exists(val):
+        return val
+    cfg = os.path.join(DATA_DIR, "snap_paths.json")
+    try:
+        with open(cfg, encoding="utf-8") as fh:
+            val = json.load(fh).get(env_name)
+        if val and os.path.exists(val):
+            return val
+    except Exception:
+        pass
+    for n in names:
+        found = shutil.which(n)
+        if found:
+            return found
+    home = os.path.expanduser("~")
+    for pattern in candidates_globs:
+        hits = sorted(glob.glob(os.path.expanduser(pattern.replace("~", home))), reverse=True)
+        if hits:
+            return hits[0]
+    return val or names[0]
+
+
+_EXE = ".exe" if sys.platform == "win32" else ""
+GPT_BIN = _find_binary("GPT_BIN", ["gpt"], [
+    "~/esa-snap/bin/gpt", "~/snap/bin/gpt", "/opt/esa-snap/bin/gpt", "/usr/local/esa-snap/bin/gpt",
+    "C:/Program Files/esa-snap/bin/gpt.exe", "C:/Program Files/snap/bin/gpt.exe",
+    "~/esa-snap/bin/gpt.exe", "/Applications/esa-snap/bin/gpt"])
+PCONVERT_BIN = _find_binary("PCONVERT_BIN", ["pconvert"], [
+    "~/esa-snap/bin/pconvert", "~/snap/bin/pconvert", "/opt/esa-snap/bin/pconvert",
+    "C:/Program Files/esa-snap/bin/pconvert.exe", "C:/Program Files/snap/bin/pconvert.exe",
+    "/Applications/esa-snap/bin/pconvert"])
+SNAPHU_BIN = _find_binary("SNAPHU_BIN", ["snaphu"], [
+    "~/.snap/auxdata/snaphu-*/bin/snaphu", "~/.snap/auxdata/snaphu-*/bin/snaphu.exe",
+    "C:/satelital/snaphu/bin/snaphu.exe"])
 
 # Nombre de carpeta descriptivo por cada gráfico. Cada ejecución crea/usa
 # esta subcarpeta dentro del output_dir para que los resultados de un
@@ -279,7 +337,7 @@ def get_config():
     Útil para que el frontend sepa dónde guardar archivos
     """
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         default_output = os.path.join(backend_dir, "files", "output")
         default_images = os.path.join(backend_dir, "files", "images")
         
@@ -323,7 +381,7 @@ def archivos_disponibles():
     plana de cientos de archivos.
     """
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         images_dir = os.path.join(backend_dir, "files", "images")
         output_dir = os.path.join(backend_dir, "files", "output")
 
@@ -401,11 +459,11 @@ def procesar():
 
         # Si el gráfico no es una ruta absoluta, construir la ruta completa en backend/files/
         if not os.path.isabs(graph):
-            backend_dir = os.path.dirname(os.path.abspath(__file__))
+            backend_dir = BACKEND_DIR
             graph = os.path.join(backend_dir, "files", graph)
         
         # Resolver rutas absolutas para todos los archivos de entrada
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         absolute_input_files = []
         
         for input_file in input_files:
@@ -742,7 +800,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         script_path = None
 
         if step_name == "SNAPHU_FULL":
-            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "Prueba_Subcarpetas_FUNCIONAL.py")
+            script_path = os.path.join(SCRIPTS_DIR, "Prueba_Subcarpetas_FUNCIONAL.py")
             script_path = os.path.abspath(script_path)
 
             # Buscar archivo de entrada (subset del paso 4)
@@ -770,7 +828,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
             env["BASE_FOLDER"] = str(base_path)
 
         elif step_name == "PHASE_TO_DISPLACEMENT":
-            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "phase_to_displacement.py")
+            script_path = os.path.join(SCRIPTS_DIR, "phase_to_displacement.py")
             script_path = os.path.abspath(script_path)
 
             # Buscar automáticamente en SnaphuImport
@@ -782,7 +840,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
                 env["INPUT_DIM"] = str(base_path / "SnaphuImport" / "output_final_Orb_Orb_UNW.dim")
 
         elif step_name == "TERRAIN_CORRECTION":
-            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "TerrainCorrection.py")
+            script_path = os.path.join(SCRIPTS_DIR, "TerrainCorrection.py")
             script_path = os.path.abspath(script_path)
 
             # SUBSET_DIM: buscar en Grafo 4
@@ -841,7 +899,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         collected_stderr = []
 
         process = subprocess.Popen(
-            ["python3", "-u", script_path],
+            _python_cmd(script_path),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -977,7 +1035,7 @@ def nueva_carpeta_salida():
                            "para poder nombrar la carpeta con sus fechas."
             }), 400
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         try:
             base_dir = _base_salida_desde_request(data)
         except ValueError as e:
@@ -1035,7 +1093,7 @@ def procesar_flujo():
         if isinstance(input_files, str):
             input_files = [input_files]
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         absolute_input_files = []
         
         print(f"[DEBUG] Input files recibidos: {input_files}")
@@ -1355,7 +1413,7 @@ def procesar_flujo_batch_auto():
         if not main_folder:
             return jsonify({"status": "error", "message": "main_folder es requerido"}), 400
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
 
         # Misma resolución de ruta que ya usa /procesar_flujo_batch, para
         # soportar tanto ruta absoluta como nombre de carpeta suelto.
@@ -1584,7 +1642,7 @@ def subir_imagen():
         if not name.lower().endswith((".zip", ".dim")):
             return jsonify({"status": "error", "message": "Solo se aceptan .zip o .dim"}), 400
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         images_dir = os.path.join(backend_dir, 'files', 'images')
         os.makedirs(images_dir, exist_ok=True)
         f.save(os.path.join(images_dir, name))
@@ -1601,7 +1659,7 @@ def serve_file(folder, filename):
     Sirve archivos estáticos desde las carpetas files/images o files/output
     """
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         
         # Validar folder
         if folder not in ['images', 'output', 'input']:
@@ -1694,7 +1752,7 @@ def preview_image():
 @app.route('/files/temp/converted/<filename>', methods=['GET'])
 def serve_temp_converted(filename):
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         file_path = os.path.join(backend_dir, 'files', 'temp', 'converted', filename)
         if not os.path.exists(file_path):
             return jsonify({"status": "error", "message": "Archivo no encontrado"}), 404
@@ -1745,7 +1803,7 @@ def info_archivo_path():
 def download_original(folder, filename):
     """Descarga el archivo original (sin conversión). Útil para obtener el TIFF completo."""
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         if folder not in ['images', 'output', 'temp', 'files', 'input']:
             return jsonify({"status": "error", "message": "Carpeta no válida"}), 400
 
@@ -1771,7 +1829,7 @@ def info_archivo(filename):
     Obtiene información básica de un archivo en la carpeta output
     """
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         output_dir = os.path.join(backend_dir, "files", "output")
         file_path = os.path.join(output_dir, filename)
         
@@ -1823,7 +1881,7 @@ def geo_info(filename):
     Obtiene información geoespacial de un archivo (coordenadas, proyección, etc.)
     """
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         output_dir = os.path.join(backend_dir, "files", "output")
         file_path = os.path.join(output_dir, filename)
         
@@ -2215,7 +2273,7 @@ def convert_image(folder, filename):
         # Mapear "input" a "images" para la ruta del archivo real
         physical_folder = "images" if folder == "input" else folder
         
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         file_path = os.path.join(backend_dir, "files", physical_folder, filename)
         
         if not os.path.exists(file_path):
@@ -2442,7 +2500,7 @@ def productos_visualizables():
         mtime, par, fecha1, fecha2 }
     """
     try:
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         default_out = os.path.join(backend_dir, "files", "output")
         base_dir = request.args.get("base_dir") or default_out
         base_dir = os.path.abspath(base_dir)
@@ -2563,7 +2621,7 @@ def convert_image_upload():
         if f.filename == '':
             return jsonify({"status": "error", "message": "No se proporcionó archivo"}), 400
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         temp_dir = os.path.join(backend_dir, 'files', 'temp')
         converted_dir = os.path.join(temp_dir, 'converted')
         os.makedirs(converted_dir, exist_ok=True)
@@ -2606,7 +2664,7 @@ def files_upload():
         if f.filename == '':
             return jsonify({"status": "error", "message": "No se proporcionó archivo"}), 400
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
         images_dir = os.path.join(backend_dir, 'files', 'images')
         os.makedirs(images_dir, exist_ok=True)
 
@@ -2640,7 +2698,7 @@ def procesar_paso():
         base_path = Path(base_output_dir)
         base_path.mkdir(parents=True, exist_ok=True)
 
-        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        backend_dir = BACKEND_DIR
 
         env = os.environ.copy()
         env["BASE_DIR"] = str(base_path)
@@ -2652,7 +2710,7 @@ def procesar_paso():
         script_path = None
 
         if step == "SNAPHU_FULL":
-            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "Prueba_Subcarpetas_FUNCIONAL.py")
+            script_path = os.path.join(SCRIPTS_DIR, "Prueba_Subcarpetas_FUNCIONAL.py")
             script_path = os.path.abspath(script_path)
             
             if input_from_user:
@@ -2710,7 +2768,7 @@ def procesar_paso():
             env["NON_INTERACTIVE"] = "1"
 
         elif step == "PHASE_TO_DISPLACEMENT":
-            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "phase_to_displacement.py")
+            script_path = os.path.join(SCRIPTS_DIR, "phase_to_displacement.py")
             script_path = os.path.abspath(script_path)
             
             # Buscar el archivo .dim generado por SnaphuImport (nombre dinámico)
@@ -2724,7 +2782,7 @@ def procesar_paso():
                 print(f"[WARN] No se encontró .dim en SnaphuImport, usando fallback")
 
         elif step == "TERRAIN_CORRECTION":
-            script_path = os.path.join(backend_dir, "..", "Scripts_Automatizacion_Snaphu", "TerrainCorrection.py")
+            script_path = os.path.join(SCRIPTS_DIR, "TerrainCorrection.py")
             script_path = os.path.abspath(script_path)
             
             # SUBSET_DIM: buscar automáticamente en Grafo 4
@@ -2765,7 +2823,7 @@ def procesar_paso():
         
         # Usar -u para unbuffered output del script hijo
         process = subprocess.Popen(
-            ["python3", "-u", script_path],
+            _python_cmd(script_path),
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -3108,6 +3166,32 @@ def exportar_banda_a_geotiff(dim_path, band_pattern, output_tiff_path, gpt_bin=N
         import traceback
         traceback.print_exc()
         return result
+
+def _python_cmd(script_path):
+    """Comando para ejecutar un script Python hijo (también dentro del ejecutable)."""
+    if FROZEN:
+        return [sys.executable, "--run-script", script_path]
+    return [sys.executable, "-u", script_path]
+
+
+@app.route('/', defaults={'path': ''})
+@app.route('/<path:path>')
+def _serve_frontend(path):
+    """Sirve la interfaz web compilada (React) desde el mismo servidor."""
+    from flask import send_from_directory
+    if path and os.path.isfile(os.path.join(FRONTEND_DIR, path)):
+        return send_from_directory(FRONTEND_DIR, path)
+    if os.path.isfile(os.path.join(FRONTEND_DIR, "index.html")):
+        return send_from_directory(FRONTEND_DIR, "index.html")
+    return jsonify({"status": "error", "message": "Frontend no compilado"}), 404
+
+
+@app.route('/estado-herramientas', methods=['GET'])
+def estado_herramientas():
+    """Indica si SNAP (gpt, pconvert) y SNAPHU fueron encontrados."""
+    return jsonify({n: {"path": p, "found": os.path.exists(p)}
+                    for n, p in (("GPT_BIN", GPT_BIN), ("PCONVERT_BIN", PCONVERT_BIN), ("SNAPHU_BIN", SNAPHU_BIN))})
+
 
 if __name__ == '__main__':
     # threaded=True es IMPRESCINDIBLE: /procesar_flujo puede tardar minutos u

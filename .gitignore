@@ -7,3 +7,8 @@ backend/files/temp/
 
 # Dependencias
 node_modules/
+
+dist/
+.buildenv/
+build/
+!frontend/build/

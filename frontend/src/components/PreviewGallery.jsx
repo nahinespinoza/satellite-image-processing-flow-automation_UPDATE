@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 
-const API_BASE = "http://localhost:5000";
+const API_BASE = process.env.REACT_APP_API_BASE ?? (window.location.port === "3000" ? "http://localhost:5000" : "");
 
 /**
  * Construye la URL de preview para un ítem devuelto por el backend
