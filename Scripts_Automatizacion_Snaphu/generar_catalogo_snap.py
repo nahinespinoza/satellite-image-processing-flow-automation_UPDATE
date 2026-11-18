@@ -139,7 +139,7 @@ def parsear_parametros(texto):
 def consultar(operador):
     """Ejecuta gpt <operador> -h y devuelve (operador, entrada_del_catalogo | error)."""
     try:
-        r = subprocess.run([GPT_BIN, operador, "-h"], capture_output=True, text=True, timeout=TIMEOUT_S)
+        r = subprocess.run([GPT_BIN, operador, "-h"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=TIMEOUT_S)
     except subprocess.TimeoutExpired:
         return operador, None, f"gpt tardó más de {TIMEOUT_S}s"
     # gpt imprime la ayuda en stdout y el ruido de arranque (SEVERE/INFO) en stderr

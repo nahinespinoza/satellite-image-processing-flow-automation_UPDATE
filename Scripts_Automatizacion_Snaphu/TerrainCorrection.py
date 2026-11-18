@@ -114,15 +114,15 @@ def run_gpt(graph_path, log_path, label):
     cmd = [GPT_BIN, str(graph_path)]
     info(f"Ejecutando {label}: {' '.join(cmd)}")
     print()
-    with open(log_path, "w") as log_f:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         for line in proc.stdout:
             sys.stdout.write(line)
             log_f.write(line)
         proc.wait()
     if proc.returncode != 0:
         error(f"{label} falló (código {proc.returncode}). Revisa: {log_path}")
-        with open(log_path) as f:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         for l in lines[-15:]:
             print(f"    {l.rstrip()}")

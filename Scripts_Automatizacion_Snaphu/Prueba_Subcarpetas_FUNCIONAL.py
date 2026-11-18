@@ -214,7 +214,7 @@ def validate_snaphu_conf(conf_path):
         "TILECOSTTHRESH", "LINELENGTH", "STATCOSTMODE", "INITMETHOD",
     ]
     found = {}
-    with open(p) as f:
+    with open(p, encoding="utf-8", errors="replace") as f:
         for line in f:
             stripped = line.strip()
             if not stripped or stripped.startswith("#"):
@@ -372,8 +372,8 @@ def run_grafico5(cfg):
     print()
 
     log_path = Path(snaphu_folder) / "grafico5.log"
-    with open(log_path, "w") as log_f:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         for line in proc.stdout:
             sys.stdout.write(line)
             log_f.write(line)
@@ -491,7 +491,7 @@ def calcular_tiling_seguro(width, height, ntilerow_deseado, ntilecol_deseado,
 
 
 def _leer_tiling_actual(conf_path):
-    with open(conf_path) as f:
+    with open(conf_path, encoding="utf-8", errors="replace") as f:
         conf_text = f.read()
     def _val(clave, default):
         return next((l.split()[1] for l in conf_text.splitlines()
@@ -502,7 +502,7 @@ def _leer_tiling_actual(conf_path):
 
 def _escribir_tiling(conf_path, ntilerow, ntilecol, rowovrlp, colovrlp):
     new_lines = []
-    with open(conf_path) as f:
+    with open(conf_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             if line.startswith("NTILEROW"):
                 new_lines.append(f"NTILEROW \t\t{ntilerow}\n")
@@ -514,7 +514,7 @@ def _escribir_tiling(conf_path, ntilerow, ntilecol, rowovrlp, colovrlp):
                 new_lines.append(f"COLOVRLP \t\t{colovrlp}\n")
             else:
                 new_lines.append(line)
-    with open(conf_path, "w") as f:
+    with open(conf_path, "w", encoding="utf-8", errors="replace") as f:
         f.writelines(new_lines)
 
 
@@ -572,7 +572,7 @@ def ejecutar_snaphu_con_reintento(snaphu_bin, conf_path, phase_filename, line_wi
     for intento in range(1, max_intentos + 1):
         info(f"Intento {intento}/{max_intentos} — comando: {' '.join(cmd)}")
         proc = subprocess.Popen(cmd, cwd=str(work_dir), stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT, text=True)
+                                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         lines_este_intento = []
         for line in proc.stdout:
             sys.stdout.write(line)
@@ -582,7 +582,7 @@ def ejecutar_snaphu_con_reintento(snaphu_bin, conf_path, phase_filename, line_wi
         output_total.append(f"\n--- intento {intento} ---\n{output_este_intento}")
 
         if proc.returncode == 0:
-            with open(log_path, "w") as log_f:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
                 log_f.write("".join(output_total))
             return True, "".join(output_total), intento
 
@@ -592,7 +592,7 @@ def ejecutar_snaphu_con_reintento(snaphu_bin, conf_path, phase_filename, line_wi
         if not es_error_tiling:
             error(f"snaphu falló con un error que NO es de tiling (código {proc.returncode}). "
                   f"No tiene sentido reintentar reduciendo tiles — revisa el log.")
-            with open(log_path, "w") as log_f:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
                 log_f.write("".join(output_total))
             return False, "".join(output_total), intento
 
@@ -602,11 +602,11 @@ def ejecutar_snaphu_con_reintento(snaphu_bin, conf_path, phase_filename, line_wi
             error("Ya se llegó a la config mínima (1x1, overlap 0) y snaphu sigue fallando. "
                   "El problema ya no es de tiling — probablemente el subset es demasiado "
                   "chico para el algoritmo de unwrapping en sí (ver nota más abajo).")
-            with open(log_path, "w") as log_f:
+            with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
                 log_f.write("".join(output_total))
             return False, "".join(output_total), intento
 
-    with open(log_path, "w") as log_f:
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
         log_f.write("".join(output_total))
     return False, "".join(output_total), max_intentos
 
@@ -626,7 +626,7 @@ def run_grafico6(cfg):
 
     # ── VALIDACIÓN PREVIA: leer ancho desde el conf ──────────────────────
     subheader("Leyendo ancho de línea (LINELENGTH) desde snaphu.conf")
-    with open(conf_path) as f:
+    with open(conf_path, encoding="utf-8", errors="replace") as f:
         content = f.read()
 
     def _ancho_consistente_con_archivo(width):
@@ -728,7 +728,7 @@ def run_grafico6(cfg):
     new_lines = []
     corrfile_fixed = False
     corrfile_original = None
-    with open(conf_path) as f:
+    with open(conf_path, encoding="utf-8", errors="replace") as f:
         for line in f:
             if line.startswith("CORRFILE") and not line.startswith("CORRFILEFORMAT"):
                 current_val = line.split(None, 1)[1].strip() if len(line.split(None, 1)) > 1 else ""
@@ -740,7 +740,7 @@ def run_grafico6(cfg):
                     new_lines.append(line)
             else:
                 new_lines.append(line)
-    with open(conf_path, "w") as f:
+    with open(conf_path, "w", encoding="utf-8", errors="replace") as f:
         f.writelines(new_lines)
 
     if corrfile_fixed:
@@ -759,7 +759,7 @@ def run_grafico6(cfg):
     # ni el binario: es que un overlap insuficiente deja a cada tile sin
     # contexto suficiente en los bordes para que el solver MCF converja al
     # ensamblar las redes secundarias entre tiles vecinos.
-    with open(conf_path) as f:
+    with open(conf_path, encoding="utf-8", errors="replace") as f:
         conf_text = f.read()
     ntilerow = next((l.split()[1] for l in conf_text.splitlines() if l.startswith("NTILEROW")), "1")
     ntilecol = next((l.split()[1] for l in conf_text.splitlines() if l.startswith("NTILECOL")), "1")
@@ -909,8 +909,8 @@ def run_grafico7(cfg):
     print()
 
     log_path = Path(g7_out_folder) / "grafico7.log"
-    with open(log_path, "w") as log_f:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    with open(log_path, "w", encoding="utf-8", errors="replace") as log_f:
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
         for line in proc.stdout:
             sys.stdout.write(line)
             log_f.write(line)
@@ -919,7 +919,7 @@ def run_grafico7(cfg):
     if proc.returncode != 0:
         error(f"Gráfico 7 falló (código {proc.returncode}). Revisa: {log_path}")
         subheader("Últimas líneas del log")
-        with open(log_path) as f:
+        with open(log_path, encoding="utf-8", errors="replace") as f:
             lines = f.readlines()
         for l in lines[-15:]:
             print(f"    {l.rstrip()}")

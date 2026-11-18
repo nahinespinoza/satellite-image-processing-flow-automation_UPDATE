@@ -18,7 +18,9 @@ import json
 import xml.etree.ElementTree as ET
 import numpy as np
 
-app = Flask(__name__)
+# static_folder=None: el frontend (incl. /static/js y /static/css del build de React)
+# lo sirve _serve_frontend; la ruta /static por defecto de Flask daba 404.
+app = Flask(__name__, static_folder=None)
 CORS(app)
 
 # ==================== CONFIGURACIÓN DE RUTAS (AJUSTAR SEGÚN CADA PC) ====================
@@ -64,14 +66,19 @@ def _find_binary(env_name, names, candidates_globs):
     val = os.environ.get(env_name)
     if val and os.path.exists(val):
         return val
-    cfg = os.path.join(DATA_DIR, "snap_paths.json")
-    try:
-        with open(cfg, encoding="utf-8") as fh:
-            val = json.load(fh).get(env_name)
-        if val and os.path.exists(val):
-            return val
-    except Exception:
-        pass
+    # snap_paths.json lo escribe el instalador: en la carpeta de datos del
+    # usuario y junto al .exe (por si se instaló con otra cuenta de admin).
+    cfgs = [os.path.join(DATA_DIR, "snap_paths.json")]
+    if getattr(sys, "frozen", False):
+        cfgs.append(os.path.join(os.path.dirname(sys.executable), "snap_paths.json"))
+    for cfg in cfgs:
+        try:
+            with open(cfg, encoding="utf-8-sig") as fh:
+                val = json.load(fh).get(env_name)
+            if val and os.path.exists(val):
+                return val
+        except Exception:
+            pass
     for n in names:
         found = shutil.which(n)
         if found:
@@ -550,7 +557,7 @@ def procesar():
                 continue
             cmd_list.append(f"-P{k}={v}")
 
-        result = subprocess.run(cmd_list, capture_output=True, text=True)
+        result = subprocess.run(cmd_list, capture_output=True, text=True, encoding="utf-8", errors="replace")
 
         if result.returncode == 0:
             # Generar preview de la banda relevante para este gráfico, igual
@@ -691,7 +698,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
         print(f"\n--- Ejecutando paso {label} (XML) ---")
         print(cmd_list)
 
-        result = subprocess.run(cmd_list, capture_output=True, text=True)
+        result = subprocess.run(cmd_list, capture_output=True, text=True, encoding="utf-8", errors="replace")
         if result.returncode != 0:
             print(result.stderr)
             raise RuntimeError(result.stderr)
@@ -903,7 +910,7 @@ def _ejecutar_flujo_completo_core(absolute_input_files, output_dir, backend_dir,
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=os.path.dirname(script_path)
         )
 
@@ -2827,7 +2834,7 @@ def procesar_paso():
             env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            text=True,
+            text=True, encoding="utf-8", errors="replace",
             cwd=os.path.dirname(script_path)
         )
 
@@ -2973,7 +2980,7 @@ def _generar_quicklook_pconvert(dim_path, band_name, output_tiff_path, pconvert_
             dim_path,
         ]
         print(f"[DEBUG] Generando quicklook con pconvert: {cmd}")
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+        proc = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180)
 
         if proc.returncode != 0:
             print(f"[WARN] pconvert falló generando quicklook para '{band_name}': {proc.stderr[-800:]}")
@@ -3130,7 +3137,7 @@ def exportar_banda_a_geotiff(dim_path, band_pattern, output_tiff_path, gpt_bin=N
             f.write(xml_content)
 
         print(f"[INFO] [{label}] exportando banda '{banda}' -> {output_tiff_path}")
-        proc = subprocess.run([gpt_bin, graph_path], capture_output=True, text=True)
+        proc = subprocess.run([gpt_bin, graph_path], capture_output=True, text=True, encoding="utf-8", errors="replace")
 
         if proc.returncode != 0:
             result["message"] = f"[{label}] gpt falló exportando '{banda}': {proc.stderr[-1500:]}"

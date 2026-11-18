@@ -50,7 +50,7 @@ graph_path.write_text(xml_content, encoding="utf-8")
 cmd = [GPT_BIN, str(graph_path)]
 print("[INFO] Ejecutando PhaseToDisplacement...")
 
-proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
 
 if proc.returncode == 0:
     print("\n[OK] Phase to Displacement completado exitosamente!")

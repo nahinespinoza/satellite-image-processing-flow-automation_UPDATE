@@ -6,6 +6,14 @@ Uso interno: `launcher --run-script <archivo.py>` ejecuta un script hijo
 import os
 import sys
 
+# En Windows la salida redirigida usa cp1252 y los print con emojis/acentos
+# hacen fallar los scripts hijos (UnicodeEncodeError). Forzar UTF-8.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 if len(sys.argv) >= 3 and sys.argv[1] == "--run-script":
     import runpy
     script = os.path.abspath(sys.argv[2])

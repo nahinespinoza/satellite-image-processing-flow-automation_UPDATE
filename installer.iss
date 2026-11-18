@@ -22,6 +22,10 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 [Files]
 Source: "dist\SatelliteFlow.exe"; DestDir: "{app}"; Flags: ignoreversion
 
+[UninstallDelete]
+Type: files; Name: "{app}\snap_paths.json"
+Type: filesandordirs; Name: "{app}\snaphu"
+
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\SatelliteFlow.exe"
 Name: "{autodesktop}\{#AppName}"; Filename: "{app}\SatelliteFlow.exe"
@@ -160,4 +164,5 @@ begin
   Json := '{"GPT_BIN": "' + JsonPath(GptPath) + '", "PCONVERT_BIN": "' + JsonPath(PconvertPath) +
           '", "SNAPHU_BIN": "' + JsonPath(SnaphuPath) + '"}';
   SaveStringToFile(DataDir + '\snap_paths.json', Json, False);
+  SaveStringToFile(ExpandConstant('{app}\snap_paths.json'), Json, False);
 end;
